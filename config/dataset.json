@@ -1,0 +1,21 @@
+{
+    "train_meta_file" : "metadata/mimiccxr_train_sub_with_count.csv",
+    "val_meta_file" : "metadata/mimiccxr_validate_sub_with_count.csv",
+    "test_meta_file" : "metadata/mimiccxr_test_sub_with_count.csv",
+
+    "img_root_dir" : "/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/files",
+    "text_root_dir" : "/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports",
+
+    "vqgan_model_path" : "/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt",
+    "vqgan_config_path" : "/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml",
+
+    "codebook_indices_path" : "/home/edlab/wcshin/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle",
+
+    "vocab_file" : "BBPE_tokenizer/vocab.json",
+    "merge_file" : "BBPE_tokenizer/merges.txt",
+
+    "max_img_num":2,
+    "target_count":2,
+    "max_text_len":256
+
+}
