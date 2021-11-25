@@ -1,24 +1,31 @@
 import os
+from torch.utils.data import DataLoader
 
+import time
 import argparse
+import math
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
+from torch.nn.functional import cross_entropy
+
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
-from protein_loader import TremblDataset
-from datamodule import CXRDataModule, ProteinDataModule
-from plmodel import PerformerLightning_i2t, TransformerLightning_i2t, PerformerLightning_protein, TransformerLightning_protein
+from OneB_loader import OneBillionWordsDataset
+from datamodule import OneBWordsDataModule
+from plmodel import TransformerLightning_OneBillionWords, PerformerLightning_OneBillionWords
+from performer_pytorch import PerformerLM_i2t, PerformerLM_Protein, PerformerLM_OneBillionWords
+from transformer_pytorch.transformer_pytorch import TransformerLM_i2t, TransformerLM_Protein, TransformerLM_OneBillionWords
 from pytorch_lightning.plugins import DDPPlugin
 from utils import str2bool
 
 if __name__ == '__main__':
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
     parser = argparse.ArgumentParser()
     # dataset args
@@ -37,17 +44,17 @@ if __name__ == '__main__':
     parser.add_argument('--target_count', default=1, type=int)
     parser.add_argument('--target_view', default=['AP', 'AP AXIAL', 'PA', 'LATERAL', 'LL', ''], nargs='+', type=str)
     parser.add_argument('--use_first_img', default=False, type=str2bool)
-    parser.add_argument('--max_input_len', default=256, type=int, choices=[256, 512, 1024, 4096, 8192])
+    parser.add_argument('--max_input_len', default=4096, type=int, choices=[256, 512, 1024, 4096, 8192])
 
     # training args
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--batch_size', default=8, type=int)
-    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--num_workers', default=6, type=int)
     parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
     parser.add_argument('--weight_decay', default=0.01, type=float, help='weight decay')
-    parser.add_argument('--n_epochs', default=10, type=int)
-    parser.add_argument('--n_gpus', default=2, type=int)
+    parser.add_argument('--n_epochs', default=5, type=int)
+    parser.add_argument('--n_gpus', default=1, type=int)
     parser.add_argument('--save_top_k', default=5, type=int)
     parser.add_argument('--fp16', default=False, type=str2bool, help='FP16')
     parser.add_argument('--sharded_ddp', default=False, type=str2bool, help='fairscale sharded ddp')
@@ -59,8 +66,8 @@ if __name__ == '__main__':
     parser.add_argument('--dim_head', default=64, type=int, help='dim of head. inner_dim = dim_head * heads')  # projection matrix에 의해 head별 차원수: dim_head -> nb_fetures
     parser.add_argument('--local_attn_heads', default=0, type=int, help='if n heads are local attention, heads-n others are global performers.')
     parser.add_argument('--local_window_size', default=256, type=int, help='window size of local attention')
-    parser.add_argument('--causal', default=True, type=str2bool, help='auto-regressive or not')
-    parser.add_argument('--nb_features', default=128, type=int, help='number of random features, if not set, will default to (d * log(d)), where d is the dimension of each head.')
+    parser.add_argument('--causal', default=False, type=str2bool, help='auto-regressive or not')
+    parser.add_argument('--nb_features', default=64, type=int, help='number of random features, if not set, will default to (d * log(d)), where d is the dimension of each head.')
     parser.add_argument('--feature_redraw_interval', default=1000, type=int,
                         help='how frequently to redraw the projection matrix, the more frequent, the slower the training')
     parser.add_argument('--reversible', default=False, type=str2bool,
@@ -70,7 +77,7 @@ if __name__ == '__main__':
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
-    parser.add_argument('--generalized_attention', default=False, type=str2bool,
+    parser.add_argument('--generalized_attention', default=True, type=str2bool,
                         help='defaults to softmax approximation, but can be set to True for generalized attention')
     parser.add_argument('--use_scalenorm', default=False, type=str2bool,
                         help='use scale norm, from Transformers without Tears paper')
@@ -88,24 +95,24 @@ if __name__ == '__main__':
 
     pl.seed_everything(args.seed)
 
-    tokenizer = ByteLevelBPETokenizer(
-        args.vocab_file,
-        args.merge_file,
-    )
-    tokenizer.add_special_tokens(["[PAD]", "[SOS]", "[EOS]", "[SEP]", "[MASK]"])
-    tokenizer._tokenizer.post_processor = BertProcessing(
-        ("[EOS]", tokenizer.token_to_id("[EOS]")),
-        ("[SOS]", tokenizer.token_to_id("[SOS]")),
-    )
-    tokenizer.enable_truncation(max_length=args.max_text_len)  # max_length: [SOS]와 [EOS]를 합친 최종길이의 최대값
-    tokenizer.enable_padding(pad_id=tokenizer.token_to_id("[PAD]"), pad_token="[PAD]",
-                             length=args.max_text_len)  # 먼저 enable_truncation에 의해 자른 후 뒤를 length까지 [PAD]로 채운다
+    # tokenizer = ByteLevelBPETokenizer(
+    #     args.vocab_file,
+    #     args.merge_file,
+    # )
+    # tokenizer.add_special_tokens(["[PAD]", "[SOS]", "[EOS]", "[SEP]", "[MASK]"])
+    # tokenizer._tokenizer.post_processor = BertProcessing(
+    #     ("[EOS]", tokenizer.token_to_id("[EOS]")),
+    #     ("[SOS]", tokenizer.token_to_id("[SOS]")),
+    # )
+    # tokenizer.enable_truncation(max_length=args.max_text_len)  # max_length: [SOS]와 [EOS]를 합친 최종길이의 최대값
+    # tokenizer.enable_padding(pad_id=tokenizer.token_to_id("[PAD]"), pad_token="[PAD]",
+    #                          length=args.max_text_len)  # 먼저 enable_truncation에 의해 자른 후 뒤를 length까지 [PAD]로 채운다
 
-    train_ds = TremblDataset(args.max_input_len, train_type='train')
-    val_ds = TremblDataset(args.max_input_len, train_type='valid')
-    test_ds = TremblDataset(args.max_input_len, train_type='test')
+    train_ds = DataLoader(OneBillionWordsDataset(args.max_input_len, train_type='train'), batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
+    val_ds = OneBillionWordsDataset(args.max_input_len, train_type='valid')
+    test_ds = OneBillionWordsDataset(args.max_input_len, train_type='test')
 
-    dm = ProteinDataModule(
+    dm = OneBWordsDataModule(
         train_ds, val_ds, test_ds,
         batch_size=args.batch_size,
         num_workers=args.num_workers
@@ -149,80 +156,30 @@ if __name__ == '__main__':
 
 
     if not args.transformer:
-        model = PerformerLightning_protein(
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            tokenizer=tokenizer,
-            pad_token_idx=tokenizer.token_to_id("[PAD]"),
-            sos_token_idx=tokenizer.token_to_id("[SOS]"),
-            eos_token_idx=tokenizer.token_to_id("[EOS]"),
-            **kargs_performerLM_i2t,
-        )
+        model = PerformerLM_OneBillionWords(**kargs_performerLM_i2t).cuda()
     else:
-        model = TransformerLightning_protein(
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            tokenizer=tokenizer,
-            pad_token_idx=tokenizer.token_to_id("[PAD]"),
-            sos_token_idx=tokenizer.token_to_id("[SOS]"),
-            eos_token_idx=tokenizer.token_to_id("[EOS]"),
-            **kargs_performerLM_i2t,
-        )
+        model = TransformerLM_OneBillionWords(**kargs_performerLM_i2t).cuda()
 
-    # callbacks
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join('/home/edlab/jylee/Scaleup/output/Performer_Protein_', '{epoch:06}--{val_loss:.2f}'),
-        verbose=True,
-        save_last=True,
-        # filename="{epoch:06}",
-        save_top_k=args.save_top_k,
-        monitor='val_loss',
-        mode='min',
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    lr_callback = LearningRateMonitor(
-        logging_interval="step",
-    )
+    for it, sample in enumerate(train_ds):
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
 
-    trainer_args = {
-        'callbacks': [lr_callback],
-        'max_epochs': args.n_epochs,
-        'gpus': args.n_gpus,
-        'accelerator': 'ddp',
-        'num_sanity_val_steps': 1,
-    }
+        data = sample['data'].cuda()
+        label = sample['label'].cuda()
+        starttime = time.monotonic()
+        logit = model(data)
+        endtime = time.monotonic()
+        print(f'forward time: {math.log2(endtime-starttime)}')
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100)
 
-    if args.reload_ckpt_dir:
-        trainer_args['resume_from_checkpoint'] = args.reload_ckpt_dir
+        starttime = time.monotonic()
+        loss.backward()
+        endtime = time.monotonic()
+        print(f'backward time: {math.log2(endtime-starttime)}')
 
-    # instrument experiment with W&B
-    wandb_logger = WandbLogger(entity='scaleup', project='jylee_protein', log_model=False, config=args)
-
-    ## TODO: 이중에서 나는 뭘 하면 되는 거지?
-
-    if (args.fp16 == True and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args,  precision=16, plugins='ddp_sharded',
-                             gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-    elif (args.fp16 == True and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, precision=16,
-                             plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-    elif (args.fp16 == False and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args, plugins='ddp_sharded', gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-    elif (args.fp16 == False and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, plugins=DDPPlugin(find_unused_parameters=False),
-                             gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-
-    # log gradients and model topology
-    # wandb_logger.watch(model)
-
-    trainer.fit(model, datamodule=dm)
-
-    trainer.test()
+        gb_in_use = torch.cuda.max_memory_allocated() / (1024*1024*1024)
+        print(f'gb_in_use: {gb_in_use}')

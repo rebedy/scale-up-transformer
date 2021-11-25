@@ -72,8 +72,7 @@ if __name__ == '__main__':
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
-    parser.add_argument('--generalized_attention', default=False, type=str2bool,
-                        help='defaults to softmax approximation, but can be set to True for generalized attention')
+    parser.add_argument('--generalized_attention', action='store_true', help='defaults to softmax approximation, but can be set to True for generalized attention')
     parser.add_argument('--use_scalenorm', default=False, type=str2bool,
                         help='use scale norm, from Transformers without Tears paper')
     parser.add_argument('--use_rezero', default=False, type=str2bool,
@@ -164,7 +163,7 @@ if __name__ == '__main__':
         'tie_embed': args.tie_embed,  ## TODO: 이게 뭐지?
         'rotary_position_emb': args.rotary_position_emb,
         'img_fmap_size': args.img_fmap_size,
-        'FAVOR': args.FAVOR,
+        # 'FAVOR': args.FAVOR,
     }
 
     if not args.transformer:
@@ -190,7 +189,7 @@ if __name__ == '__main__':
 
     # callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join('/home/edlab/jylee/Scaleup/output/TransformerFAVOR_3090', '{epoch:06}--{val_loss:.2f}'),
+        dirpath=os.path.join('/home/edlab/jylee/Scaleup/output/Performer', '{epoch:06}--{val_loss:.2f}'),
         verbose=True,
         save_last=True,
         # filename="{epoch:06}",

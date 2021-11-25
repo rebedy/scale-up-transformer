@@ -2,23 +2,29 @@ import os
 
 import argparse
 import torch
+import time
+import math
 import torch.nn as nn
+from torch.utils.data import DataLoader
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
-from protein_loader import TremblDataset
+from protein_loader import ProteinDataset
 from datamodule import CXRDataModule, ProteinDataModule
 from plmodel import PerformerLightning_i2t, TransformerLightning_i2t, PerformerLightning_protein, TransformerLightning_protein
+from performer_pytorch import PerformerLM_i2t, PerformerLM_Protein
+from transformer_pytorch.transformer_pytorch import TransformerLM_i2t, TransformerLM_Protein
 from pytorch_lightning.plugins import DDPPlugin
 from utils import str2bool
 
 if __name__ == '__main__':
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
     parser = argparse.ArgumentParser()
     # dataset args
@@ -37,24 +43,24 @@ if __name__ == '__main__':
     parser.add_argument('--target_count', default=1, type=int)
     parser.add_argument('--target_view', default=['AP', 'AP AXIAL', 'PA', 'LATERAL', 'LL', ''], nargs='+', type=str)
     parser.add_argument('--use_first_img', default=False, type=str2bool)
-    parser.add_argument('--max_input_len', default=256, type=int, choices=[256, 512, 1024, 4096, 8192])
+    parser.add_argument('--max_input_len', default=40, type=int)
 
     # training args
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--batch_size', default=8, type=int)
-    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--num_workers', default=1, type=int)
     parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
     parser.add_argument('--weight_decay', default=0.01, type=float, help='weight decay')
-    parser.add_argument('--n_epochs', default=10, type=int)
-    parser.add_argument('--n_gpus', default=2, type=int)
+    parser.add_argument('--n_epochs', default=1000, type=int)
+    parser.add_argument('--n_gpus', default=1, type=int)
     parser.add_argument('--save_top_k', default=5, type=int)
     parser.add_argument('--fp16', default=False, type=str2bool, help='FP16')
     parser.add_argument('--sharded_ddp', default=False, type=str2bool, help='fairscale sharded ddp')
 
     # model args
-    parser.add_argument('--dim', default=512, type=int, help='dimension. dimension must be divisible by number of heads.')
-    parser.add_argument('--depth', default=6, type=int, help='layers')
+    parser.add_argument('--dim', default=64, type=int, help='dimension. dimension must be divisible by number of heads.')
+    parser.add_argument('--depth', default=1, type=int, help='layers')
     parser.add_argument('--heads', default=8, type=int, help='heads')
     parser.add_argument('--dim_head', default=64, type=int, help='dim of head. inner_dim = dim_head * heads')  # projection matrix에 의해 head별 차원수: dim_head -> nb_fetures
     parser.add_argument('--local_attn_heads', default=0, type=int, help='if n heads are local attention, heads-n others are global performers.')
@@ -70,7 +76,7 @@ if __name__ == '__main__':
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
-    parser.add_argument('--generalized_attention', default=False, type=str2bool,
+    parser.add_argument('--generalized_attention', default=True, type=str2bool,
                         help='defaults to softmax approximation, but can be set to True for generalized attention')
     parser.add_argument('--use_scalenorm', default=False, type=str2bool,
                         help='use scale norm, from Transformers without Tears paper')
@@ -101,15 +107,9 @@ if __name__ == '__main__':
     tokenizer.enable_padding(pad_id=tokenizer.token_to_id("[PAD]"), pad_token="[PAD]",
                              length=args.max_text_len)  # 먼저 enable_truncation에 의해 자른 후 뒤를 length까지 [PAD]로 채운다
 
-    train_ds = TremblDataset(args.max_input_len, train_type='train')
-    val_ds = TremblDataset(args.max_input_len, train_type='valid')
-    test_ds = TremblDataset(args.max_input_len, train_type='test')
-
-    dm = ProteinDataModule(
-        train_ds, val_ds, test_ds,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers
-    )
+    train_ds = DataLoader(ProteinDataset(args.max_input_len), batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
+    val_ds = DataLoader(ProteinDataset(args.max_input_len), batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+    test_ds = DataLoader(ProteinDataset(args.max_input_len), batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 
     # add
     # args.num_tokens = train_ds.text_vocab_size  # NOTE: text vocab size
@@ -146,83 +146,27 @@ if __name__ == '__main__':
         # 'FAVOR': args.FAVOR,
     }
 
-
-
     if not args.transformer:
-        model = PerformerLightning_protein(
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            tokenizer=tokenizer,
-            pad_token_idx=tokenizer.token_to_id("[PAD]"),
-            sos_token_idx=tokenizer.token_to_id("[SOS]"),
-            eos_token_idx=tokenizer.token_to_id("[EOS]"),
-            **kargs_performerLM_i2t,
-        )
-    else:
-        model = TransformerLightning_protein(
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            tokenizer=tokenizer,
-            pad_token_idx=tokenizer.token_to_id("[PAD]"),
-            sos_token_idx=tokenizer.token_to_id("[SOS]"),
-            eos_token_idx=tokenizer.token_to_id("[EOS]"),
-            **kargs_performerLM_i2t,
-        )
+        model = PerformerLM_Protein(**kargs_performerLM_i2t).cuda()
+    elif args.transformer:
+        model = TransformerLM_Protein(**kargs_performerLM_i2t).cuda()
 
-    # callbacks
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join('/home/edlab/jylee/Scaleup/output/Performer_Protein_', '{epoch:06}--{val_loss:.2f}'),
-        verbose=True,
-        save_last=True,
-        # filename="{epoch:06}",
-        save_top_k=args.save_top_k,
-        monitor='val_loss',
-        mode='min',
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    lr_callback = LearningRateMonitor(
-        logging_interval="step",
-    )
+    for it, sample in enumerate(train_ds):
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
 
-    trainer_args = {
-        'callbacks': [lr_callback],
-        'max_epochs': args.n_epochs,
-        'gpus': args.n_gpus,
-        'accelerator': 'ddp',
-        'num_sanity_val_steps': 1,
-    }
+        starttime = time.monotonic()
+        logit = model(sample.cuda())
+        endtime = time.monotonic()
+        print(f'Forward time: {math.log2(endtime-starttime)}')
 
-    if args.reload_ckpt_dir:
-        trainer_args['resume_from_checkpoint'] = args.reload_ckpt_dir
+        logit = logit.mean()
+        starttime = time.monotonic()
+        logit.backward()
+        endtime = time.monotonic()
+        print(f'backward time: {math.log2(endtime-starttime)}')
 
-    # instrument experiment with W&B
-    wandb_logger = WandbLogger(entity='scaleup', project='jylee_protein', log_model=False, config=args)
-
-    ## TODO: 이중에서 나는 뭘 하면 되는 거지?
-
-    if (args.fp16 == True and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args,  precision=16, plugins='ddp_sharded',
-                             gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-    elif (args.fp16 == True and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, precision=16,
-                             plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-    elif (args.fp16 == False and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args, plugins='ddp_sharded', gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-    elif (args.fp16 == False and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, plugins=DDPPlugin(find_unused_parameters=False),
-                             gradient_clip_val=0.5,
-                             logger=wandb_logger,
-                             )
-
-    # log gradients and model topology
-    # wandb_logger.watch(model)
-
-    trainer.fit(model, datamodule=dm)
-
-    trainer.test()
+        gb_in_use = torch.cuda.max_memory_allocated() / (1024*1024*1024)
+        print(f'gb_in_use: {gb_in_use}')
