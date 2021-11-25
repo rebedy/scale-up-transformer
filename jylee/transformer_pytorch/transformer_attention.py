@@ -4,6 +4,8 @@ import torch.nn.functional as F
 
 import math
 from einops import rearrange, repeat
+import time
+import math
 
 from transformer_pytorch.model_utils import *
 
@@ -54,6 +56,8 @@ class TransformerAttention(nn.Module):
 
         causal_mask[256:, 256:] = small_causal_mask
 
+        # causal_mask = torch.triu(causal_mask, diagonal=1)
+
         # causal mask
         if causal_mask is not None:  # 당연히 None은 아님
             attn_weights = attn_weights.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1).bool(), float("-inf"))
@@ -62,9 +66,16 @@ class TransformerAttention(nn.Module):
         if mask is not None:
             attn_weights = attn_weights.masked_fill(mask.unsqueeze(1).unsqueeze(2).bool(), float("-inf"))
 
+        starttime = time.monotonic()
         attn_weights = F.softmax(attn_weights, dim=-1)
+        endtime = time.monotonic()
+        # print(f'softmax time: {endtime-starttime}')
 
+        starttime = time.monotonic()
         attn_output = torch.matmul(attn_weights, value)
+        endtime = time.monotonic()
+        # print(f'multiply with key matrix {endtime-starttime}')
+
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous()   # [B, seq_len, head, dim_head]
         concat_attn_output_shape = attn_output.size()[:-2] + (self.dim,)
         attn_output = attn_output.view(*concat_attn_output_shape)

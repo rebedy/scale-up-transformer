@@ -61,3 +61,33 @@ class ProteinDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.test, batch_size=self.batch_size, drop_last=False, shuffle=False)
+
+class OneBWordsDataModule(pl.LightningDataModule):
+    def __init__(self,
+                 train=None,
+                 val=None,
+                 test=None,
+                 batch_size=16,
+                 num_workers=0,
+                 ):
+        super().__init__()
+        self.train = train
+        self.val = val
+        self.test = test
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    def prepare_data(self):
+        pass
+
+    def setup(self, stage=None):
+        pass
+
+    def train_dataloader(self):
+        return DataLoader(self.train, batch_size=self.batch_size, drop_last=False, shuffle=True, num_workers=self.num_workers)
+
+    def val_dataloader(self):
+        return DataLoader(self.val, batch_size=self.batch_size, drop_last=False, shuffle=False, num_workers=self.num_workers)
+
+    def test_dataloader(self):
+        return DataLoader(self.test, batch_size=self.batch_size, drop_last=False, shuffle=False, num_workers=self.num_workers)

@@ -3,8 +3,8 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torch.nn.functional import cross_entropy
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from performer_pytorch import PerformerLM_i2t, PerformerLM_Protein
-from transformer_pytorch.transformer_pytorch import TransformerLM_i2t, TransformerLM_Protein
+from performer_pytorch import PerformerLM_i2t, PerformerLM_Protein, PerformerLM_OneBillionWords
+from transformer_pytorch.transformer_pytorch import TransformerLM_i2t, TransformerLM_Protein, TransformerLM_OneBillionWords
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
@@ -14,7 +14,7 @@ import subprocess
 import time
 from cal_metric import get_label_metric_v4
 import os
-
+import math
 
 
 class PerformerLightning_i2t(pl.LightningModule):
@@ -90,7 +90,7 @@ class PerformerLightning_i2t(pl.LightningModule):
             total_gen_text = torch.cat((total_gen_text, gen_text), dim=0)
         # -> total_gen_text, total_GT_text: [valset_size, max_text_len]
         
-        if self.global_rank == 0: 
+        if self.global_rank == 0:    # 이건 왜 있는 거지?
             GT_decoded_texts = []
             gen_decoded_texts = []
             for gt_text_i, gen_text_i in zip(total_GT_text, total_gen_text):
@@ -122,9 +122,11 @@ class PerformerLightning_i2t(pl.LightningModule):
             self.log("val_BLEU-3", bleu3)
             self.log("val_BLEU-4", bleu4)
 
+            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
+
             # save csv files for labeler
-            GT_REPORTS_PATH = 'GT_reports_temp.csv'
-            GEN_REPORTS_PATH = 'GEN_reports_temp.csv'
+            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_eval.csv')
+            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_eval.csv')
             
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -142,13 +144,13 @@ class PerformerLightning_i2t(pl.LightningModule):
             """
             # run labeler
             time.sleep(0.5)
-            LABELED_GT_REPORTS_PATH = 'labeled_GT_reports_temp.csv'
-            LABELED_GEN_REPORTS_PATH = 'labeled_GEN_reports_temp.csv'
+            LABELED_GT_REPORTS_PATH = os.path.join(dirpath, 'labeled_GT_reports_temp.csv')
+            LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_temp.csv')
             subprocess.run(
                 f'source ~/anaconda3/bin/activate chexpert-label \
-                && cd ~/scaleup_transformer/chexpert-labeler \
-                && export PYTHONPATH=~/scaleup_transformer/chexpert-labeler/NegBio:$PYTHONPATH \
-                && python ~/scaleup_transformer/chexpert-labeler/label.py \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
                 --reports_path {os.path.abspath(GT_REPORTS_PATH)} \
                 --output_path {os.path.abspath(LABELED_GT_REPORTS_PATH)}', 
                 shell=True,
@@ -156,9 +158,9 @@ class PerformerLightning_i2t(pl.LightningModule):
                 )
             subprocess.run(
                 f'source ~/anaconda3/bin/activate chexpert-label \
-                && cd ~/scaleup_transformer/chexpert-labeler \
-                && export PYTHONPATH=~/scaleup_transformer/chexpert-labeler/NegBio:$PYTHONPATH \
-                && python ~/scaleup_transformer/chexpert-labeler/label.py \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
                 --reports_path {os.path.abspath(GEN_REPORTS_PATH)} \
                 --output_path {os.path.abspath(LABELED_GEN_REPORTS_PATH)}', 
                 shell=True,
@@ -177,6 +179,7 @@ class PerformerLightning_i2t(pl.LightningModule):
             self.log("val_recall", metric_all[2])
             self.log("val_f1", metric_all[3])
             """
+
 
     def test_step(self, batch, batch_idx):
         img_paths, study_ids, images, texts = batch['img_paths'], batch['study_id'], batch['images'], batch['texts']
@@ -255,9 +258,11 @@ class PerformerLightning_i2t(pl.LightningModule):
             self.log("test_BLEU-3", bleu3)
             self.log("test_BLEU-4", bleu4)
 
+            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
+
             # save csv files for labeler
-            GT_REPORTS_PATH = 'GT_reports_temp.csv'
-            GEN_REPORTS_PATH = 'GEN_reports_temp.csv'
+            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_test.csv')
+            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_test.csv')
             
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -272,16 +277,17 @@ class PerformerLightning_i2t(pl.LightningModule):
             f_gt.close()
             f_gen.close()
 
+
             """
             # run labeler
             time.sleep(0.5)
-            LABELED_GT_REPORTS_PATH = 'labeled_GT_reports_temp.csv'
-            LABELED_GEN_REPORTS_PATH = 'labeled_GEN_reports_temp.csv'
+            LABELED_GT_REPORTS_PATH = os.path.join(dirpath, 'labeled_GT_reports_temp.csv')
+            LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_temp.csv')
             subprocess.run(
                 f'source ~/anaconda3/bin/activate chexpert-label \
-                && cd ~/scaleup_transformer/chexpert-labeler \
-                && export PYTHONPATH=~/scaleup_transformer/chexpert-labeler/NegBio:$PYTHONPATH \
-                && python ~/scaleup_transformer/chexpert-labeler/label.py \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
                 --reports_path {os.path.abspath(GT_REPORTS_PATH)} \
                 --output_path {os.path.abspath(LABELED_GT_REPORTS_PATH)}', 
                 shell=True,
@@ -289,9 +295,9 @@ class PerformerLightning_i2t(pl.LightningModule):
                 )
             subprocess.run(
                 f'source ~/anaconda3/bin/activate chexpert-label \
-                && cd ~/scaleup_transformer/chexpert-labeler \
-                && export PYTHONPATH=~/scaleup_transformer/chexpert-labeler/NegBio:$PYTHONPATH \
-                && python ~/scaleup_transformer/chexpert-labeler/label.py \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
                 --reports_path {os.path.abspath(GEN_REPORTS_PATH)} \
                 --output_path {os.path.abspath(LABELED_GEN_REPORTS_PATH)}', 
                 shell=True,
@@ -373,31 +379,81 @@ class PerformerLightning_protein(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         data = batch
-        starttime = time.time()
+        starttime = time.monotonic()
         logit = self(data)
-        endtime = time.time()
-        print(f'forward time: {endtime-starttime}')
-        logit = logit.reshape(-1, 20)
+        endtime = time.monotonic()
+        # print(f'forward time: {math.log2(endtime-starttime)}')
+        logit = logit.reshape(-1, 30)
         data = data.reshape(-1)
-        loss = cross_entropy(logit, data)
+        loss = cross_entropy(logit, data, ignore_index=0)
         self.log('train_loss', loss)
-        self.log('train_forward', endtime-starttime)
+        # self.log('train_forward', endtime-starttime)
         return loss
 
     def validation_step(self, batch, batch_idx):
         data = batch
-        logit = self(data)
-        # print(f'forward time: {endtime - starttime}')
-        loss = cross_entropy(logit.reshape(-1, 20), data.reshape(-1))
-        self.log('val_loss', loss)
-        return loss
+        gen_proteins = self.performerLM_protein.generate_proteins(data)
+
+        # loss = cross_entropy(logit.reshape(-1, 30), data.reshape(-1), ignore_index=0)
+        output = {
+            'label': data,
+            'predict': gen_proteins,
+            # 'val_loss': loss
+        }
+
+        data = data.reshape(-1)
+        gen_proteins = gen_proteins.reshape(-1)
+
+        acc = (data == gen_proteins).sum()
+        acc = acc / gen_proteins.size(0)
+        self.log('val_acc', acc)
+
+        return output
+
+    def validation_step_end(self, validation_step_outputs):
+        gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
+
+        # total_val_loss = torch.mean(gathered_validation_step_outputs['val_loss'])
+        # self.log('val_loss', total_val_loss)
+
+        # total_predict = gathered_validation_step_outputs['predict'].reshape(-1, 30)
+        # total_predict = total_predict.argmax(-1)
+
+        total_label = gathered_validation_step_outputs['label'].reshape(-1)
+        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
+
+        acc = (total_predict == total_label).sum()
+        acc = acc / total_predict.size(0)
+        self.log('val_total_acc', acc)
 
     def test_step(self, batch, batch_idx):
         data = batch
-        logit = self(data)
-        loss = cross_entropy(logit.reshape(-1, 20), data.reshape(-1))
-        self.log('test_loss', loss)
-        return loss
+        gen_proteins = self.performerLM_protein.generate_proteins(data)
+
+        # loss = cross_entropy(logit.reshape(-1, 30), data.reshape(-1), ignore_index=0)
+        output = {
+            'label': data,
+            'predict': gen_proteins,
+            # 'val_loss': loss
+        }
+        return output
+
+    def test_step_end(self, test_step_outputs):
+        gathered_validation_step_outputs = self.all_gather(test_step_outputs)
+
+        # total_val_loss = torch.mean(gathered_validation_step_outputs['val_loss'])
+        # self.log('val_loss', total_val_loss)
+
+        # total_predict = gathered_validation_step_outputs['predict'].reshape(-1, 30)
+        # total_predict = total_predict.argmax(-1)
+
+        total_label = gathered_validation_step_outputs['label'].reshape(-1)
+        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
+
+        acc = (total_predict == total_label).sum()
+        acc = acc / total_predict.size(0)
+        self.log('test_acc', acc)
+
 
     def configure_optimizers(self):
         all_params = set(self.parameters())
@@ -434,7 +490,132 @@ class PerformerLightning_protein(pl.LightningModule):
             min_lr=1e-6,
             verbose=True,
         )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "train_loss"}
+
+
+class PerformerLightning_OneBillionWords(pl.LightningModule):
+    def __init__(self, lr=5e-4, weight_decay=0.01, **kargs):
+        super().__init__()
+        self.kargs = kargs
+        self.performerLM_OneBillionWords = PerformerLM_OneBillionWords(**kargs)
+        self.weight_decay = weight_decay
+        self.lr = lr
+        self.save_hyperparameters()
+
+    def forward(self, data):
+        logit = self.performerLM_OneBillionWords(data)
+        return logit
+
+    def training_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+        starttime = time.monotonic()
+        logit = self(data)
+        endtime = time.monotonic()
+        # print(f'forward time: {math.log2(endtime-starttime)}')
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+
+        ppl = torch.exp(loss[torch.where(loss != 0.)]).mean()
+
+        mask_count = (data == 103).sum()
+        loss = (loss.sum() / mask_count)
+
+        metric = {
+            'train_loss': loss,
+            'train_ppl': ppl
+        }
+        self.log_dict(metric)
+        # self.log('train_forward', endtime-starttime)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+
+        return loss
+
+    def validation_step_end(self, validation_step_outputs):
+        eval_loss = self.all_gather(validation_step_outputs)
+
+        ppl = torch.exp(eval_loss[torch.where(eval_loss != 0.)]).mean()
+
+        mask_count = (eval_loss != 0).sum()
+        loss = (eval_loss.sum() / mask_count)
+
+        metric = {
+            'eval_loss': loss,
+            'eval_ppl': ppl
+        }
+
+        self.log_dict(metric)
+
+    def test_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+        return loss
+
+    def test_step_end(self, test_step_outputs):
+        test_loss = self.all_gather(test_step_outputs)
+
+        ppl = torch.exp(test_loss[torch.where(test_loss != 0.)]).mean()
+
+        mask_count = (test_loss != 0.).sum()
+        loss = (test_loss.sum() / mask_count)
+
+        metric = {
+            'test_loss': loss,
+            'test_ppl': ppl
+        }
+
+        self.log_dict(metric)
+
+    def configure_optimizers(self):
+        all_params = set(self.parameters())
+        wd_params = set()
+        decay_module = (nn.Embedding, nn.Linear, nn.Conv2d)
+        for m in self.modules():
+            if isinstance(m, decay_module):
+                wd_params.add(m.weight)
+
+        no_wd_params = all_params - wd_params
+        wd_params = list(wd_params)
+        no_wd_params = list(no_wd_params)
+
+        optimizer_grouped_parameters = [
+            {
+                "params": wd_params,
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": no_wd_params,
+                "weight_decay": 0.0,
+            }
+        ]
+
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.lr)
+
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            cooldown=10,
+            min_lr=1e-6,
+            verbose=True,
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "eval_loss"}
 
 
 class TransformerLightning_i2t(pl.LightningModule):
@@ -544,7 +725,7 @@ class TransformerLightning_i2t(pl.LightningModule):
             self.log("val_BLEU-3", bleu3)
             self.log("val_BLEU-4", bleu4)
 
-            dirpath = '/home/edlab/jylee/Scaleup/output/TransformerFAVOR_3090'
+            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
 
             # save csv files for labeler
             GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_temp.csv')
@@ -566,48 +747,49 @@ class TransformerLightning_i2t(pl.LightningModule):
             print('Finished Saving Files')
             time.sleep(0.5)
 
+            """
+            # run labeler
+            time.sleep(0.5)
+            LABELED_GT_REPORTS_PATH = os.path.join(dirpath, 'labeled_GT_reports_temp.csv')
+            LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_temp.csv')
+            subprocess.run(
+                f'source ~/anaconda3/bin/activate chexpert-label \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
+                --reports_path {GT_REPORTS_PATH} \
+                --output_path {LABELED_GT_REPORTS_PATH}',
+                shell=True,
+                executable='/bin/bash',
+            )
+            print('ran labeled gt reports')
 
-            # # run labeler
-            # time.sleep(0.5)
-            # LABELED_GT_REPORTS_PATH = os.path.join(dirpath, 'labeled_GT_reports_temp.csv')
-            # LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_temp.csv')
-            # subprocess.run(
-            #     f'source ~/anaconda3/bin/activate chexpert-label \
-            #     && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
-            #     && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
-            #     && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
-            #     --reports_path {GT_REPORTS_PATH} \
-            #     --output_path {LABELED_GT_REPORTS_PATH}',
-            #     shell=True,
-            #     executable='/bin/bash',
-            # )
-            # print('ran labeled gt reports')
-            #
-            # subprocess.run(
-            #     f'source ~/anaconda3/bin/activate chexpert-label \
-            #     && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
-            #     && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
-            #     && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
-            #     --reports_path {GEN_REPORTS_PATH} \
-            #     --output_path {LABELED_GEN_REPORTS_PATH}',
-            #     shell=True,
-            #     executable='/bin/bash',
-            # )
-            #
-            #
-            # # calculate metrics
-            # time.sleep(0.5)
-            # _, _, _, metric_all, _, _, _, _ = get_label_metric_v4(
-            #     hypothesis=LABELED_GEN_REPORTS_PATH,
-            #     reference=LABELED_GT_REPORTS_PATH,
-            # )
-            # print(
-            #     f"(micro) accuracy, precision, recall, f1 for all : {metric_all[0]:.3f}, {metric_all[1]:.3f}, {metric_all[2]:.3f}, {metric_all[3]:.3f}")
-            # self.log("val_acc", metric_all[0])
-            # self.log("val_precision", metric_all[1])
-            # self.log("val_recall", metric_all[2])
-            # self.log("val_f1", metric_all[3])
-            #
+            subprocess.run(
+                f'source ~/anaconda3/bin/activate chexpert-label \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
+                --reports_path {GEN_REPORTS_PATH} \
+                --output_path {LABELED_GEN_REPORTS_PATH}',
+                shell=True,
+                executable='/bin/bash',
+            )
+
+
+            # calculate metrics
+            time.sleep(0.5)
+            _, _, _, metric_all, _, _, _, _ = get_label_metric_v4(
+                hypothesis=LABELED_GEN_REPORTS_PATH,
+                reference=LABELED_GT_REPORTS_PATH,
+            )
+            print(
+                f"(micro) accuracy, precision, recall, f1 for all : {metric_all[0]:.3f}, {metric_all[1]:.3f}, {metric_all[2]:.3f}, {metric_all[3]:.3f}")
+            self.log("val_acc", metric_all[0])
+            self.log("val_precision", metric_all[1])
+            self.log("val_recall", metric_all[2])
+            self.log("val_f1", metric_all[3])
+            """
+
 
     def test_step(self, batch, batch_idx):
         img_paths, study_ids, images, texts = batch['img_paths'], batch['study_id'], batch['images'], batch['texts']
@@ -687,11 +869,11 @@ class TransformerLightning_i2t(pl.LightningModule):
             self.log("test_BLEU-3", bleu3)
             self.log("test_BLEU-4", bleu4)
 
-            dirpath = '/home/edlab/jylee/Scaleup/output/TransformerFAVOR_3090'
+            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
 
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_temp.csv')
-            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_temp.csv')
+            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_test.csv')
+            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_test.csv')
 
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -707,45 +889,45 @@ class TransformerLightning_i2t(pl.LightningModule):
             f_gen.close()
             print('Finished Saving Files')
 
+            """
+            # run labeler
+            time.sleep(0.5)
+            LABELED_GT_REPORTS_PATH = os.path.join(dirpath, 'labeled_GT_reports_test.csv')
+            LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_test.csv')
+            subprocess.run(
+                f'source ~/anaconda3/bin/activate chexpert-label \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
+                --reports_path {GT_REPORTS_PATH} \
+                --output_path {LABELED_GT_REPORTS_PATH}',
+                shell=True,
+                executable='/bin/bash',
+            )
+            subprocess.run(
+                f'source ~/anaconda3/bin/activate chexpert-label \
+                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
+                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
+                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
+                --reports_path {GEN_REPORTS_PATH} \
+                --output_path {LABELED_GEN_REPORTS_PATH}',
+                shell=True,
+                executable='/bin/bash',
+            )
 
-            # # run labeler
-            # time.sleep(0.5)
-            # LABELED_GT_REPORTS_PATH = os.path.join(dirpath, 'labeled_GT_reports_temp.csv')
-            # LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_temp.csv')
-            # subprocess.run(
-            #     f'source ~/anaconda3/bin/activate chexpert-label \
-            #     && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
-            #     && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
-            #     && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
-            #     --reports_path {GT_REPORTS_PATH} \
-            #     --output_path {LABELED_GT_REPORTS_PATH}',
-            #     shell=True,
-            #     executable='/bin/bash',
-            # )
-            # subprocess.run(
-            #     f'source ~/anaconda3/bin/activate chexpert-label \
-            #     && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
-            #     && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
-            #     && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
-            #     --reports_path {GEN_REPORTS_PATH} \
-            #     --output_path {LABELED_GEN_REPORTS_PATH}',
-            #     shell=True,
-            #     executable='/bin/bash',
-            # )
-            #
-            # # calculate metrics
-            # time.sleep(0.5)
-            # _, _, _, metric_all, _, _, _, _ = get_label_metric_v4(
-            #     hypothesis=LABELED_GEN_REPORTS_PATH,
-            #     reference=LABELED_GT_REPORTS_PATH,
-            # )
-            # print(
-            #     f"(test)(micro) accuracy, precision, recall, f1 for all : {metric_all[0]:.3f}, {metric_all[1]:.3f}, {metric_all[2]:.3f}, {metric_all[3]:.3f}")
-            # self.log("test_acc", metric_all[0])
-            # self.log("test_precision", metric_all[1])
-            # self.log("test_recall", metric_all[2])
-            # self.log("test_f1", metric_all[3])
-            #
+            # calculate metrics
+            time.sleep(0.5)
+            _, _, _, metric_all, _, _, _, _ = get_label_metric_v4(
+                hypothesis=LABELED_GEN_REPORTS_PATH,
+                reference=LABELED_GT_REPORTS_PATH,
+            )
+            print(
+                f"(test)(micro) accuracy, precision, recall, f1 for all : {metric_all[0]:.3f}, {metric_all[1]:.3f}, {metric_all[2]:.3f}, {metric_all[3]:.3f}")
+            self.log("test_acc", metric_all[0])
+            self.log("test_precision", metric_all[1])
+            self.log("test_recall", metric_all[2])
+            self.log("test_f1", metric_all[3])
+            """
 
     def configure_optimizers(self):
 
@@ -809,31 +991,58 @@ class TransformerLightning_protein(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         data = batch
-        starttime = time.time()
+        starttime = time.monotonic()
         logit = self(data)
-        endtime = time.time()
-        print(f'forward time: {endtime-starttime}')
-        logit = logit.reshape(-1, 20)
+        endtime = time.monotonic()
+        # print(f'forward time: {math.log2(endtime-starttime)}')
+        logit = logit.reshape(-1, 30)
         data = data.reshape(-1)
         loss = cross_entropy(logit, data)
         self.log('train_loss', loss)
-        self.log('train_forward', endtime-starttime)
+        # self.log('train_forward', endtime-starttime)
         return loss
 
     def validation_step(self, batch, batch_idx):
         data = batch
-        logit = self(data)
-        # print(f'forward time: {endtime - starttime}')
-        loss = cross_entropy(logit.reshape(-1, 20), data.reshape(-1))
-        self.log('val_loss', loss)
-        return loss
+        gen_proteins = self.transformerLM_protein.generate_proteins(data)
+
+        output = {
+            'label': data,
+            'predict': gen_proteins,
+        }
+
+        return output
+
+    def validation_step_end(self, validation_step_outputs):
+        gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
+
+        total_label = gathered_validation_step_outputs['label'].reshape(-1)
+        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
+
+        acc = (total_predict == total_label).sum()
+        acc = acc / total_predict.size(0)
+        self.log('val_total_acc', acc)
 
     def test_step(self, batch, batch_idx):
         data = batch
-        logit = self(data)
-        loss = cross_entropy(logit.reshape(-1, 20), data.reshape(-1))
-        self.log('test_loss', loss)
-        return loss
+        gen_proteins = self.transformerLM_protein.generate_proteins(data)
+
+        output = {
+            'label': data,
+            'predict': gen_proteins,
+        }
+
+        return output
+
+    def test_step_end(self, test_step_outputs):
+        gathered_validation_step_outputs = self.all_gather(test_step_outputs)
+
+        total_label = gathered_validation_step_outputs['label'].reshape(-1)
+        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
+
+        acc = (total_predict == total_label).sum()
+        acc = acc / total_predict.size(0)
+        self.log('test_total_acc', acc)
 
     def configure_optimizers(self):
         all_params = set(self.parameters())
@@ -870,4 +1079,127 @@ class TransformerLightning_protein(pl.LightningModule):
             min_lr=1e-6,
             verbose=True,
         )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "train_loss"}
+
+
+###################################################################
+class TransformerLightning_OneBillionWords(pl.LightningModule):
+    def __init__(self, lr=5e-4, weight_decay=0.01, **kargs):
+        super().__init__()
+        self.kargs = kargs
+        self.transformerLM_OneBillionWords = TransformerLM_OneBillionWords(**kargs)
+        self.weight_decay = weight_decay
+        self.lr = lr
+        self.save_hyperparameters()
+
+    def forward(self, data):
+        logit = self.transformerLM_OneBillionWords(data)
+        return logit
+
+    def training_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+
+        ppl = torch.exp(loss[torch.where(loss!=0.)]).mean()
+
+        mask_count = (data == 103).sum()
+        loss = (loss.sum() / mask_count)
+
+        metric = {
+            'train_loss': loss,
+            'train_ppl': ppl
+        }
+        self.log_dict(metric)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+        return loss
+
+    def validation_step_end(self, validation_step_outputs):
+        eval_loss = self.all_gather(validation_step_outputs)
+
+        ppl = torch.exp(eval_loss[torch.where(eval_loss != 0.)]).mean()
+
+        mask_count = (eval_loss != 0).sum()
+        loss = (eval_loss.sum() / mask_count)
+
+        metric = {
+            'eval_loss': loss,
+            'eval_ppl': ppl
+        }
+
+        self.log_dict(metric)
+
+    def test_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+        return loss
+
+    def test_step_end(self, test_step_outputs):
+        test_loss = self.all_gather(test_step_outputs)
+
+        ppl = torch.exp(test_loss[torch.where(test_loss != 0.)]).mean()
+
+        mask_count = (test_loss != 0.).sum()
+        loss = (test_loss.sum() / mask_count)
+
+        metric = {
+            'test_loss': loss,
+            'test_ppl': ppl
+        }
+
+        self.log_dict(metric)
+
+    def configure_optimizers(self):
+        all_params = set(self.parameters())
+        wd_params = set()
+        decay_module = (nn.Embedding, nn.Linear, nn.Conv2d)
+        for m in self.modules():
+            if isinstance(m, decay_module):
+                wd_params.add(m.weight)
+
+        no_wd_params = all_params - wd_params
+        wd_params = list(wd_params)
+        no_wd_params = list(no_wd_params)
+
+        optimizer_grouped_parameters = [
+            {
+                "params": wd_params,
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": no_wd_params,
+                "weight_decay": 0.0,
+            }
+        ]
+
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.lr)
+
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            cooldown=10,
+            min_lr=1e-6,
+            verbose=True,
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "eval_loss"}
+
+

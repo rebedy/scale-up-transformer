@@ -112,6 +112,13 @@ def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_si
 
     return torch.cat(outs, dim=-2)  # -> [B, global_head, seq_len, dim_head]
 
+# non-causal linear attention
+def linear_attention(q, k, v):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+    k_cumsum = k.sum(dim = -2)  # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당.
+    D_inv = 1. / torch.einsum('...nd,...d->...n', q, k_cumsum.type_as(q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
+    context = torch.einsum('...nd,...ne->...de', k, v) # -> [B, global_head, nb_features, dim_head]   n에 해당하는 차원(seq_len) 으로 sum됨. 논문의 식에서 (K')T V
+    out = torch.einsum('...de,...nd,...n->...ne', context, q, D_inv) # -> [B, global_head, seq_len, dim_head]   # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
+    return out  # [B, global_head, seq_len, dim_head]
 
 
 class FastAttention(nn.Module):
@@ -160,7 +167,7 @@ class FastAttention(nn.Module):
             q = create_kernel(q, is_query=True)  # -> [B, global_head, seq_len, nb_features] 즉, q의 random feature vector를 얻었다
             k = create_kernel(k, is_query=False)  # -> [B, global_head, seq_len, nb_features] 즉, k의 random feature vector를 얻었다
 
-        attn_fn = self.causal_linear_fn
+        attn_fn = linear_attention if not self.causal else self.causal_linear_fn
         out = attn_fn(q, k, v)
         return out  # [B, global_head, seq_len, dim_head]
 
