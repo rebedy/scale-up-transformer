@@ -438,7 +438,7 @@ class Attention(nn.Module):
         chunk_size=128,
         feature_redraw_interval = 1000,
         generalized_attention = False,
-        kernel_fn = nn.ReLU(inplace = True), # inplace 하면 input으로 들어온 것 자체를 수정하겠다는 뜻. 메모리 usage가 좀 좋아짐. 하지만 input을 없앰.
+        kernel_fn = nn.ReLU(inplace = False), # inplace 하면 input으로 들어온 것 자체를 수정하겠다는 뜻. 메모리 usage가 좀 좋아짐. 하지만 input을 없앰.
         dropout = 0.,
         no_projection = False,
         qkv_bias = False,

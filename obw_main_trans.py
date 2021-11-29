@@ -104,8 +104,8 @@ def build_dataloaders(dataset, batch_size, train_test_split=0.1, train_shuffle=F
     train_dataset, eval_dataset = random_split(dataset, (train_len, eval_len))
     train_sampler = distributed.DistributedSampler(train_dataset, drop_last=True, seed=args.seed) 
     val_sampler = distributed.DistributedSampler(eval_dataset, drop_last=True, seed=args.seed)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=train_shuffle, sampler=train_sampler)
-    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=eval_shuffle, sampler=val_sampler)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=train_shuffle, sampler=train_sampler, pin_memory=True)
+    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=eval_shuffle, sampler=val_sampler, pin_memory=True)
     # print(f'''train_dataloader size: {len(train_loader.dataset)} | shuffle: {train_shuffle} | eval_dataloader size: {len(eval_loader.dataset)} | shuffle: {eval_shuffle}''')
     return train_loader, train_sampler, eval_loader, val_sampler
 
@@ -175,11 +175,11 @@ def main_worker(args: argparse.Namespace):
         elif args.kernel_type == 'generalised':
             args.generalized_attention = True
             args.no_projection = False
+            args.clip_grad=False
         elif args.kernel_type == 'no_projection':
             args.generalized_attention = False
             args.no_projection = True
     args.causal = None
-    args.clip_grad=False
     args.ff_mult = int(args.d_ff / args.dim)
     
     model = TransformerLM(
@@ -193,6 +193,7 @@ def main_worker(args: argparse.Namespace):
         ff_mult = args.ff_mult,
         nb_features=args.nb_features,
         reversible=args.reversible,
+        ff_glu = args.ff_glu,
         attn_dropout = args.attn_dropout,
         ff_dropout = args.ff_dropout,
         stable_softmax=args.stable_softmax,
@@ -234,7 +235,6 @@ def main_worker(args: argparse.Namespace):
     param_dicts = [{"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},]
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr, betas=(0.9, 0.98), eps=1e-09, weight_decay=args.weight_decay)
     
-    dist.barrier()
 
     # Scale learning rate based on global batch size 1*10
     # args.lr = args.lr*float(args.batch_size*args.world_size)/256.
@@ -253,6 +253,7 @@ def main_worker(args: argparse.Namespace):
      
     
         
+    dist.barrier()
      
     #!!!!!!!!!!!!!!!!!!!!!!!!!!# Benchmark #!!!!!!!!!!!!!!!!!!!!!!!!!!#
     
@@ -291,13 +292,10 @@ def main_worker(args: argparse.Namespace):
                 
                 if args.profiler:
                     with torch.autograd.profiler.profile(profile_memory=True) as prof: #with_stack=True, 
-                        logits = model(seq, input_mask=input_mask)
+                        logits = model(seq, mask=input_mask)
 
                 else:
-                    logits = model(seq, input_mask=input_mask)
-            
-            #!#
-            dist.barrier()
+                    logits = model(seq, mask=input_mask)
             
             # only calculating loss on masked tokens
             loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index = -100)
@@ -307,12 +305,12 @@ def main_worker(args: argparse.Namespace):
             if gpu == 0:
                 f_time.append(np.log2(time.monotonic() - forward_start))
                 forward_time = np.log2(time.monotonic() - forward_start)
+                torch.cuda.empty_cache()
                 backward = time.monotonic()
                 
-            # torch.cuda.empty_cache()
-            # torch.cuda.reset_peak_memory_stats              
             #!#
             scaler.scale(loss).backward()
+            dist.barrier()
             #!#
             
             if args.clip_grad:
@@ -321,6 +319,7 @@ def main_worker(args: argparse.Namespace):
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            torch.cuda.empty_cache()
                     
             if gpu == 0:
                 batch_time = time.monotonic()-batch_start
@@ -331,7 +330,7 @@ def main_worker(args: argparse.Namespace):
                 logits = logits.transpose(1, 2)
                 correct = (seq == torch.argmax(logits, 1))
                 hit_sum = correct.float().sum()
-                    
+            
             if gpu == 0 and args.profile:
                 iter_time.append(time.monotonic()-batch_start)
                 b_time.append(np.log2(time.monotonic() - backward))
@@ -381,8 +380,7 @@ def main_worker(args: argparse.Namespace):
                         seq, input_mask, labels = batch  # _ is input_mask
                         seq, input_mask, labels = seq.to(gpu), input_mask.to(gpu), labels.to(gpu)
                         ################################################################################
-                        val_logits = model(seq, input_mask=input_mask)
-                        dist.barrier()
+                        val_logits = model(seq, mask=input_mask)
                     
                         val_loss = F.cross_entropy(val_logits.transpose(1, 2), labels, ignore_index = -100)
                         val_loss = val_loss.item()
@@ -412,7 +410,7 @@ def main_worker(args: argparse.Namespace):
                     val_avg_acc= np.array(_val_avg_acc).mean()
                     print(f'\nEpoch {epoch}: validation loss: {val_avg_loss} | validation ppl: {val_avg_ppl} | validation acc: {val_avg_acc}\n')
                   
-                
+                dist.barrier()
                 is_best = val_loss < best_loss
                 best_loss = min(loss, best_loss)
                 save_checkpoint({
@@ -437,6 +435,7 @@ def main_worker(args: argparse.Namespace):
         
         # save model & log
         if gpu == 0:
+                dist.barrier()
                 is_best = loss < best_loss
                 best_loss = min(loss, best_loss)
                 save_checkpoint({

@@ -19,18 +19,18 @@ parser.add_argument('--dataset_dir', default="/home/data_storage/dylee_135/one-b
 parser.add_argument('--vocab_path', default="scripts/nonbreaking_prefixes/nonbreaking_prefix.en", type=str)
 parser.add_argument('--data_path', default="training-monolingual.tokenized.shuffled/", type=str)
 parser.add_argument('--checkpoint_path', default="log_owb/checkpoints", type=str)
-parser.add_argument('--model_name', default="transformer-mlm-small", type=str)
                         #!#
+parser.add_argument('--model_name', default="transformer-mlm-small", type=str)
 parser.add_argument('--max_seq_len', default=256, type=int) # report 최대 길이
 
 
 ## Model args
                         #!#
-parser.add_argument('--dim', default=512, type=int, help='model dimension. dimension must be divisible by number of heads.')
-parser.add_argument('--depth', default=6, type=int, help='layers')
+parser.add_argument('--dim', default=64, type=int, help='model dimension. dimension must be divisible by number of heads.')
+parser.add_argument('--depth', default=1, type=int, help='layers')
 parser.add_argument('--heads', default=8, type=int, help='heads')
 parser.add_argument('--dim_head', default=64, type=int, help='dim of head. inner_dim = dim_head * heads. d_k')
-parser.add_argument('--d_ff', default=2048, type=int, help='dim * mult.  In feed forward layer, self.w1 = nn.Linear(dim, dim * mult) and self.w2 = nn.Linear(dim * mult, dim)')
+parser.add_argument('--d_ff', default=64, type=int, help='dim * mult.  In feed forward layer, self.w1 = nn.Linear(dim, dim * mult) and self.w2 = nn.Linear(dim * mult, dim)')
 parser.add_argument('--nb_features', default=256, type=int, help='number of random features, if not set, will default to (d * log(d)), where d is the dimension of each head.')
 
                         #!#
@@ -48,8 +48,8 @@ parser.add_argument('--shift_tokens', help = 'Use the shift tokens feature', act
 parser.add_argument('--local_attn_heads', default=0, type=int, help='if n heads are local attention, heads-n others are global performers.')
 parser.add_argument('--local_window_size', default=256, type=int, help='window size of local attention')
 parser.add_argument('--feature_redraw_interval', default=1000, type=int, help='how frequently to redraw the projection matrix, the more frequent, the slower the training')
-parser.add_argument('--ff_chunks', default=10, type=int, help='chunk feedforward layer, from Reformer paper')
-parser.add_argument('--ff_glu', default=True, type=str2bool, help='use GLU variant for feedforward')
+parser.add_argument('--ff_chunks', default=1, type=int, help='chunk feedforward layer, from Reformer paper')
+parser.add_argument('--ff_glu', default=False, type=str2bool, help='use GLU variant for feedforward') #!!!!!!!!!!!!!!!!!!!!!!!!!!#
 parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
 parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
 parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
@@ -68,12 +68,12 @@ parser.add_argument('--rotary_emb', default=False, type=str2bool,
 
 # training args
                         #!#
-parser.add_argument('--batch_size', default=100, type=int)
+parser.add_argument('--batch_size', default=8, type=int)
 parser.add_argument('--ckpt_dir', default="",type=str)
 parser.add_argument('--seed', default=42, type=int)
-parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
+parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--weight_decay', default=1e-4, type=float)
-parser.add_argument('--clip_grad', default=False, type=str2bool)
+parser.add_argument('--clip_grad', default=True, type=str2bool) #!!!!!!!!!!!!!!!!!!!!!!!!!!#
 parser.add_argument('--max_grad_norm', default=5., type=float)
 parser.add_argument('--start_epoch', default=1, type=int)
 parser.add_argument('--epochs', default=50, type=int)

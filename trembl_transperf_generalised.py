@@ -163,7 +163,7 @@ def main_worker(args: argparse.Namespace):
     # else:
     #     raise "The kernel_type argument has to be one of followings; 'trans', 'favor', 'generalised'"
     
-    args.attn_type = 'perf'
+    args.attn_types = 'perf'
     args.kernel_type = 'generalised'
     args.generalized_attention = True
     args.no_projection = False
@@ -176,23 +176,22 @@ def main_worker(args: argparse.Namespace):
         max_seq_len = args.max_seq_len,
         dim = args.dim,
         depth = args.depth,
-        causal=args.causal,
-        reversible=args.reversible,
         heads = args.heads,
         dim_head = args.dim_head,
+        causal=args.causal,
         ff_mult = args.ff_mult,
         nb_features=args.nb_features,
+        reversible=args.reversible,
         attn_dropout = args.attn_dropout,
         ff_dropout = args.ff_dropout,
         stable_softmax=args.stable_softmax,
-        sandwich_norm=args.sandwich_norm,
+        # sandwich_norm=args.sandwich_norm,
         shift_tokens = args.shift_tokens,
-        rotary_emb=args.rotary_emb,
-        attn_types=args.attn_type,
+        rotary_position_emb=args.rotary_position_emb,
+        attn_types=args.attn_types,
         generalized_attention = args.generalized_attention,
         no_projection = args.no_projection,
-    )
-    
+    )    
     # model = PerformerLM(**kargs_performerLM_i2t)
     model = AutoregressiveWrapper(model)
     model = model.to(memory_format=torch.contiguous_format).cuda(gpu)
