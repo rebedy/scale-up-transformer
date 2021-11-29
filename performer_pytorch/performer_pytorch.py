@@ -1,4 +1,3 @@
-import time
 import math
 import torch
 import torch.nn.functional as F
@@ -12,6 +11,11 @@ from contextlib import contextmanager
 from performer_pytorch.local_attention import LocalAttention
 from axial_positional_embedding import AxialPositionalEmbedding
 from performer_pytorch.reversible import ReversibleSequence, SequentialSequence
+from performer_pytorch.filter_logits_functions import top_k, top_p
+
+from distutils.version import LooseVersion
+
+TORCH_GE_1_8_0 = LooseVersion(torch.__version__) >= LooseVersion('1.8.0')
 
 try:
     from apex import amp
@@ -60,6 +64,37 @@ class Always(nn.Module):
     def forward(self, *args, **kwargs):
         return self.val
 
+
+# token shifting helper and classes
+
+def shift(t, amount, mask = None):
+    if amount == 0:
+        return t
+
+    if exists(mask):
+        t = t.masked_fill(~mask[..., None], 0.)
+
+    return F.pad(t, (0, 0, amount, -amount), value = 0.)
+
+class PreShiftTokens(nn.Module):
+    def __init__(self, shifts, fn):
+        super().__init__()
+        self.fn = fn
+        self.shifts = tuple(shifts)
+
+    def forward(self, x, **kwargs):
+        mask = kwargs.get('mask', None)
+        shifts = self.shifts
+        segments = len(shifts)
+        feats_per_shift = x.shape[-1] // segments
+        splitted = x.split(feats_per_shift, dim = -1)
+        segments_to_shift, rest = splitted[:segments], splitted[segments:]
+        segments_to_shift = list(map(lambda args: shift(*args, mask = mask), zip(segments_to_shift, shifts)))
+        x = torch.cat((*segments_to_shift, *rest), dim = -1)
+        return self.fn(x, **kwargs)
+
+
+
 # kernel functions
 
 # transcribed from jax to pytorch from
@@ -68,7 +103,7 @@ class Always(nn.Module):
 def softmax_kernel(data, *, projection_matrix, is_query, normalize_data=True, eps=1e-4, device = None): # projection_matrix: [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal.
     b, h, *_ = data.shape  # data: q 또는 k: [B, global_head, seq_len, dim_head]
 
-    data_normalizer = (data.shape[-1] ** -0.25) if normalize_data else 1.  # NOTE: 왜 ** -0.25이지? ** -0.5가 아니라?  왜 1/sqrt(d)가 아니냐는 말임. 그 이유는, query쪽에서 한 번, key쪽에서 한 번 해줘서 둘을 곱하면 ** -0.5가 됨. 
+    data_normalizer = (data.shape[-1] ** -0.25) if normalize_data else 1.  # NOTE: 왜 ** -0.25이지? query쪽에서 한 번, key쪽에서 한 번 해줘서 둘을 곱하면 ** -0.5가 됨. 
 
     ratio = (projection_matrix.shape[0] ** -0.5)   # paper에서 1/sqrt(m)을 의미하는 것 같음
 
@@ -85,10 +120,12 @@ def softmax_kernel(data, *, projection_matrix, is_query, normalize_data=True, ep
     if is_query:
         data_dash = ratio * (
             torch.exp(data_dash - diag_data -                                   # torch.max(data_dash, dim=-1, keepdim=True).values: [B, global_head, seq_len, 1]
-                    torch.max(data_dash, dim=-1, keepdim=True).values) + eps)   # -> [B, global_head, seq_len, nb_features]
+                      torch.amax(data_dash, dim=-1, keepdim=True)) + eps)
+                    # torch.max(data_dash, dim=-1, keepdim=True).values) + eps)   # -> [B, global_head, seq_len, nb_features]
     else:
         data_dash = ratio * (
-            torch.exp(data_dash - diag_data - torch.max(data_dash)) + eps)      # -> [B, global_head, seq_len, nb_features]
+            torch.exp(data_dash - diag_data - torch.amax(data_dash, dim=(-1, -2), keepdim=True)) + eps)
+            # torch.exp(data_dash - diag_data - torch.max(data_dash)) + eps)      # -> [B, global_head, seq_len, nb_features]
     # NOTE: exp 안에 max값을 빼는 이유: Numerical stability. 나중에 attention계산시 분모에도 Q', K'이 들어가므로 최종 결과에는 영향 없음
     return data_dash.type_as(data) # [B, global_head, seq_len, nb_features]  data(Q 또는 K)의 random feature vector를 얻었다. 즉 Q', K'에 해당
 
@@ -100,7 +137,7 @@ def generalized_kernel(data, *, projection_matrix, kernel_fn = nn.ReLU(), kernel
     if projection_matrix is None:
         return kernel_fn(data_normalizer * data) + kernel_epsilon
 
-    projection = repeat(projection_matrix, 'j d -> b h j d', b = b, h = h)
+    projection = repeat(projection_matrix, 'j d -> b h j d', b = b, h = h) # [b, head, j, dim]
     projection = projection.type_as(data)
 
     data_dash = torch.einsum('...id,...jd->...ij', (data_normalizer * data), projection)
@@ -110,8 +147,13 @@ def generalized_kernel(data, *, projection_matrix, kernel_fn = nn.ReLU(), kernel
 
 def orthogonal_matrix_chunk(cols, device = None):
     unstructured_block = torch.randn((cols, cols), device = device)
-    ###!### cpu  qr ->deprecated soon 
-    q, r = torch.qr(unstructured_block.cpu(), some = True)  # q, r: [cols, cols]  QR decomposition. input = QR with Q being an orthogonal matrix or batch of orthogonal matrices and R being an upper triangular matrix or batch of upper triangular matrices.
+    if TORCH_GE_1_8_0:
+        q, r = torch.linalg.qr(unstructured_block.cpu(), mode = 'reduced')
+    else:
+        q, r = torch.qr(unstructured_block.cpu(), some = True)  
+        # q, r: [cols, cols]  QR decomposition. 
+        # input = QR with Q being an orthogonal matrix or batch of orthogonal matrices 
+        # and R being an upper triangular matrix or batch of upper triangular matrices.
     q, r = map(lambda t: t.to(device), (q, r))              # torch.mm(q.t(), q).round() = I
     return q.t()  # -> row벡터들이 서로 orthogonal
 
@@ -134,26 +176,26 @@ def gaussian_orthogonal_random_matrix(nb_rows, nb_columns, scaling = 0, device =
     if scaling == 0:   # 보통 0
         multiplier = torch.randn((nb_rows, nb_columns), device = device).norm(dim = 1)  # [nb_rows]   row별 L2-norm. tensor([ 7.9014,  7.9234,  7.0152,  6.4810,  7.9664,  8.0006,...])
     elif scaling == 1:  # NOTE: regularized softmax-kernel(SMREG)인 듯
-        multiplier = math.sqrt((float(nb_columns))) * torch.ones((nb_rows,), device = device)  # [nb_rows]   원소들이 전부 qsrt(nb_columns). tensor([ 8., 8., ...])
+        multiplier = math.sqrt((float(nb_columns))) * torch.ones((nb_rows,), device = device)  # [nb_rows]   원소들이 전부 sqrt(nb_columns). tensor([ 8., 8., ...])
     else:
         raise ValueError(f'Invalid scaling {scaling}')
 
     return torch.diag(multiplier) @ final_matrix  # [nb_rows, nb_rows]  @ [nb_rows, nb_columns] = [nb_rows, nb_columns]
               # 즉, scaling == 0이면 orthogonal한 random feature들의 길이가 다 다른거고, scaling == 1이면 길이가 qsrt(nb_columns)로 전부 동일한 것(구 표현에 다 있다는 것). 
 
-# linear attention classes with softmax kernel
+
+
+## linear attention classes with softmax kernel
 
 # non-causal linear attention
 def linear_attention(q, k, v):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
     k_cumsum = k.sum(dim = -2)  # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당. 
     D_inv = 1. / torch.einsum('...nd,...d->...n', q, k_cumsum.type_as(q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
-    
-    ### 이 부분을 EPFL의 쿠다 커널 버전을 보낼 수도 있다.
     context = torch.einsum('...nd,...ne->...de', k, v) # -> [B, global_head, nb_features, dim_head]   n에 해당하는 차원(seq_len) 으로 sum됨. 논문의 식에서 (K')T V
-    
-    
-    out = torch.einsum('...de,...nd,...n->...ne', context, q, D_inv) # -> [B, global_head, seq_len, dim_head]   # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
+    out = torch.einsum('...de,...nd,...n->...ne', context, q, D_inv) # -> [B, global_head, seq_len, dim_head]   
+    # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
     return out  # [B, global_head, seq_len, dim_head]  
+
 
 # efficient causal linear attention, created by EPFL
 # TODO: rewrite EPFL's CUDA kernel to do mixed precision and remove half to float conversion and back
@@ -200,8 +242,6 @@ def causal_linear_attention_noncuda(q, k, v, chunk_size = 128, eps = 1e-6): # q,
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
 def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size = 128, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
-    s = time.time()
-    
     condition_q = q[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_k = k[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_v = v[:, :, :condition_len]  # [B, global_head, condition_len, dim_head]
@@ -216,41 +256,33 @@ def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_si
     outs = [condition_out]
 
     # chunk화해서 for문 돌리는 이유: 메모리를 좀 더 써서 for문을 적게 돌겠다.
-    for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))):
-        #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
-        
+    for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))): #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
         k_cumsum = last_k_cumsum + k.cumsum(dim=-2) # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
 
         D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q) + eps) # -> [B, global_head, seq_len/chunk_size]  논문의 식에서 Q' ((K')T 1L)에 해당. 다만 층위구조.
         context = torch.einsum('...nd,...ne->...nde', k, v)  # -> [B, global_head, seq_len/chunk_size, nb_features ,dim_head] outer product.  논문의 식에서 (K')T V.  다만 같은 seq 위치별로.
         context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
-        out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q.float(), D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
+        out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
 
         last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요.
         last_context_cumsum = context_cumsum[:, :, -1:]  # [B, global_head, 1, nb_features ,dim_head]  # 이건 다음 for문(다음 chunk)에서 context_cumsum를 구하기 위해 필요.
         outs.append(out)
 
-    # print(time.time()-s) #  0.20224452018737793 0.12634563446044922 0.10121822357177734 0.2719271183013916 0.27508044242858887
-    # print("conditioned causal linear att\n")
-
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
 
 class FastAttention(nn.Module):
-    def __init__(self, dim_heads, nb_features = None, ortho_scaling = 0, causal = False, condition_len = 0, generalized_attention = False, kernel_fn = nn.ReLU(), no_projection = False, profile=False):
+    def __init__(self, dim_heads,  nb_features = None, ortho_scaling = 0, causal = False, chunk_size=128, condition_len = 0, generalized_attention = False, kernel_fn = nn.ReLU(), no_projection = False):
         super().__init__()
         nb_features = default(nb_features, int(dim_heads * math.log(dim_heads)))
 
-        self.profile = profile      
         self.dim_heads = dim_heads          # eg. 64
         self.nb_features = nb_features      # eg. 256
         self.ortho_scaling = ortho_scaling  # eg. 0   (0 또는 1)
 
         self.create_projection = partial(gaussian_orthogonal_random_matrix, nb_rows = self.nb_features, nb_columns = dim_heads, scaling = ortho_scaling)
-        
         # 레이어별로 projection_matrix를 만들어 놓는구나
-        projection_matrix = self.create_projection()  
-        # [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal. ortho_scaling=0이면 가우시안에서 임의로 [nb_features, dim_heads]을 만들고 norm(dim=1)한 값인 [nb_features]를 row별로 곱한다. 
+        projection_matrix = self.create_projection()  # [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal. ortho_scaling=0이면 가우시안에서 임의로 [nb_features, dim_heads]을 만들고 norm(dim=1)한 값인 [nb_features]를 row별로 곱한다. 
         self.register_buffer('projection_matrix', projection_matrix)  # 즉, scaling == 0이면 orthogonal한 random feature들의 길이가 다 다른거고, scaling == 1이면 길이가 qsrt(nb_columns)로 전부 동일한 것(구 표현에 다 있다는 것).
 
         self.generalized_attention = generalized_attention  # 보통 False. NOTE: 이게 의미하는 바가 뭐지?
@@ -261,25 +293,20 @@ class FastAttention(nn.Module):
         self.no_projection = no_projection  # 보통 False
 
         self.causal = causal
-        if causal:
-            # s = time.time()
-            self.causal_linear_fn = partial(conditioned_causal_linear_attention_noncuda, condition_len=condition_len)
-            # print(time.time()-s) # 6.198883056640625e-06 sec 7.3909759521484375e-06 
-            # print("conditioned causal linear att\n")
+        if causal=="conditioned":
+            self.causal_linear_fn = partial(conditioned_causal_linear_attention_noncuda, chunk_size=chunk_size, condition_len=condition_len)
+        elif causal=="linear":
+            self.causal_linear_fn = partial(causal_linear_attention_noncuda, chunk_size=chunk_size)
 
     @torch.no_grad()
     def redraw_projection_matrix(self, device):
-        s = time.time()
         projections = self.create_projection(device = device)
         self.projection_matrix.copy_(projections)
         del projections
-        # print(time.time()-s)
-        # print("redraw_projection_matrix\n") # 2.5447072982788086
-
 
     def forward(self, q, k, v):  # q, k, v: [B, global_head, seq_len, dim_head]
         device = q.device
-        s = time.monotonic()
+
         if self.no_projection:  # 보통 False
             q = q.softmax(dim = -1)
             k = torch.exp(k) if self.causal else k.softmax(dim = -2)
@@ -292,22 +319,9 @@ class FastAttention(nn.Module):
             create_kernel = partial(softmax_kernel, projection_matrix = self.projection_matrix, device = device)
             q = create_kernel(q, is_query = True)  # -> [B, global_head, seq_len, nb_features] 즉, q의 random feature vector를 얻었다
             k = create_kernel(k, is_query = False) # -> [B, global_head, seq_len, nb_features] 즉, k의 random feature vector를 얻었다
-        # if self.profile:
-            # print("Kernel projection: ", time.time()-s) #  1633774615.4245207  # 0.10114192962646484
 
-        # print(time.time()-s)  #
-        # print("self.no_projection", self.no_projection) # False
-        # print("self.generalized_attention", self.generalized_attention) # False
-        # print("self.projection_matrix.shape", self.projection_matrix.shape) # torch.Size([64, 64])
-        # print("Softmax Kernal\n")
-        
-        s = time.monotonic()
         attn_fn = linear_attention if not self.causal else self.causal_linear_fn
         out = attn_fn(q, k, v)  # -> [B, global_head, seq_len, dim_head]
-        # if self.profile:
-        #     print("attn_fn: ", time.time()-s)  # 0.10114192962646484   1633774615.703978
-        # print("FastAttention forward") # 0.06791210174560547 0.06883358955383301
-
         return out # [B, global_head, seq_len, dim_head]
 
 # a module for keeping track of when to update the projections
@@ -323,25 +337,17 @@ class ProjectionUpdater(nn.Module):
         self.feature_redraw_interval = None
 
     def redraw_projections(self):
-        # print(" in redraw_projections !!")
         model = self.instance
 
         if not self.training:
             return
 
         if exists(self.feature_redraw_interval) and self.calls_since_last_redraw >= self.feature_redraw_interval: # calls_since_last_redraw가 interval을 넘어가면 redraw
-            # s = time.time()
             device = get_module_device(model)
 
             fast_attentions = find_modules(model, FastAttention)  # list
             for fast_attention in fast_attentions:
-                # s = time.time()
                 fast_attention.redraw_projection_matrix(device)
-                # print(time.time()-s)  #0.0007290840148925781 0.00030994415283203125
-                # print("in redraw projection -> fast attention redraw pm")
-                
-            # print(time.time()-s)  # 0.04625892639160156
-            # print("in redraw projection -> fast attention redraw pm DONE!!!")
 
             self.calls_since_last_redraw.zero_()
             return
@@ -374,7 +380,7 @@ class PreScaleNorm(nn.Module):
         x = x / n * self.g
         return self.fn(x, **kwargs)
 
-class PreLayerNorm(nn.Module):
+class  PreLayerNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
@@ -407,46 +413,42 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(dim * mult, dim)
 
     def forward(self, x, **kwargs):  # x: [B, seq_len/self.chunks, dim]  kwargs: {}
-        # s = time.time()
-        if not self.glu:  # 보통 True
+        if not self.glu: ###GELU  # 보통 True  
             x = self.w1(x)
             x = self.act(x)
-        else:
+        else:  ### GEGLU
             x, v = self.w1(x).chunk(2, dim=-1)  # -> [B, seq_len/self.chunks, 4*2*dim] -> [B, seq_len/self.chunks, 4*dim]씩 쪼개짐
             x = self.act(x) * v
 
         x = self.dropout(x)
         x = self.w2(x)  # -> [B, seq_len/self.chunks, dim]
-        # print(time.time()-s) # 0.0012090206146240234 0.0016064643859863281 0.0019178390502929688
-        # input("FeedForward")
         return x  # [B, seq_len/self.chunks, dim]
 
 class Attention(nn.Module):
     def __init__(
         self,
         dim,
-        causal = True,
+        causal = False,
         condition_len = 0,
         heads = 8,
         dim_head = 64,
         local_heads = 0,
         local_window_size = 256,
         nb_features = None,
+        chunk_size=128,
         feature_redraw_interval = 1000,
         generalized_attention = False,
-        kernel_fn = nn.ReLU(),
+        kernel_fn = nn.ReLU(inplace = True), # inplace 하면 input으로 들어온 것 자체를 수정하겠다는 뜻. 메모리 usage가 좀 좋아짐. 하지만 input을 없앰.
         dropout = 0.,
         no_projection = False,
         qkv_bias = False,
-        attn_out_bias = True,
-        profile = True
+        attn_out_bias = True
     ):
         super().__init__()
         assert dim % heads == 0, 'dimension must be divisible by number of heads'
         dim_head = default(dim_head, dim // heads)  # dim_head가 존재하면 그걸 그대로 return
         inner_dim = dim_head * heads
-        # print("inner_dim : ", inner_dim) 768
-        self.fast_attention = FastAttention(dim_head, nb_features, causal = causal, condition_len = condition_len, generalized_attention = generalized_attention, kernel_fn = kernel_fn, no_projection = no_projection, profile=profile)
+        self.fast_attention = FastAttention(dim_head, nb_features, causal = causal, chunk_size=chunk_size, condition_len = condition_len, generalized_attention = generalized_attention, kernel_fn = kernel_fn, no_projection = no_projection)
 
         self.heads = heads
         self.global_heads = heads - local_heads
@@ -459,8 +461,7 @@ class Attention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, pos_emb = None, context = None, mask = None, context_mask = None, **kwargs): # x: [B, seq_len, dim]  pos_emb: [1, seq_len, dim_head]  mask: [B, seq_len]
-        s = time.time()
-        b, n, _, h, gh = *x.shape, self.heads, self.global_heads   # eg. self.heads = 12, self.global_heads = 8
+        b, n, _, h, gh = *x.shape, self.heads, self.global_heads   # eg. self.heads = 8, self.global_heads = 4
 
         cross_attend = exists(context)  # 보통 False
 
@@ -474,42 +475,30 @@ class Attention(nn.Module):
         # q, k, v: [B, global_heads, seq_len, dim_head]  lq, lk, lv: [B, local_heads, seq_len, dim_head]
         attn_outs = []
 
-        s = time.time()
         if not empty(q):
             if exists(context_mask):
                 global_mask = context_mask[:, None, :, None]  # -> [B, 1, seq_len, 1]
                 v.masked_fill_(~global_mask, 0.)   # NOTE: 이런 방식은 arbitrary한 마스크는 못 만들지만 모든 query가 특정 key를 보지 못하게는 만들 수 있음. 근데 그럼 attn score는 sum to 1인데 v에는 score의 leaking발생.
-                # print("context mask exists")
 
             if exists(pos_emb) and not cross_attend:
                 q, k = apply_rotary_pos_emb(q, k, pos_emb)  # positional embedding으로 rotary positional emb.  layer마다 적용된다! NOTE: text token들에 대해서만 적용하려면 여기를 수정해야 하는데 새로 클래스 만들어서 수정하기!
-                # print("apply rotary pos emb")
-            
+
             out = self.fast_attention(q, k, v)  # -> [B, global_head, seq_len, dim_head]  여기가 핵심! 
             attn_outs.append(out)
-        # print(time.time()-s) # 0.10623383522033691 0.13326811790466309
-        # print("Fast Attention q\n")
 
-        s = time.time()
         if not empty(lq):
             assert not cross_attend, 'local attention is not compatible with cross attention'
             out = self.local_attn(lq, lk, lv, input_mask = mask) # -> [B, local_heads, seq_len, dim_head]
             attn_outs.append(out)
-        # print(time.time()-s) # 3.0994415283203125e-06 3.814697265625e-06
-        # print("Local attention lq\n")
 
-        s = time.time()
         out = torch.cat(attn_outs, dim = 1)  # -> [B, heads, seq_len, dim_head]
         out = rearrange(out, 'b h n d -> b n (h d)') # -> [B, seq_len, inner_dim]
         out =  self.to_out(out)   # -> [B, seq_len, dim]
-        # print(time.time()-s)  # 20.681732654571533 31.635023593902588  7.4364142417907715 15.32670783996582 # after reversible 0.7665295600891113 0.7566730976104736
-        # print("Attention forward")
         return self.dropout(out)  # -> [B, seq_len, dim]
 
 class SelfAttention(Attention):  # 여기에서 __init__()을 정의하지 않은 것은, Attention에 있는 __init__()을 덮어쓰지 않고 그대로 쓰겠다는 것
     def forward(self, *args, context = None, **kwargs):
         assert not exists(context), 'self attention should not receive context'
-        # print(context)  #None
         return super().forward(*args, **kwargs) # args: (tensor([[[-0.5840, -...='cuda:0'),)    # kargs: {'pos_emb': tensor([[[ 0.0000,  ...='cuda:0'), 'mask': tensor([[True, True,...='cuda:0')}
 
 class CrossAttention(Attention):
@@ -571,6 +560,7 @@ class Performer(nn.Module):
         condition_len = 0,
         ff_mult = 4,
         nb_features = None,
+        chunk_size=128, 
         feature_redraw_interval = 1000,
         reversible = False,
         ff_chunks = 1,
@@ -585,17 +575,16 @@ class Performer(nn.Module):
         no_projection = False,
         auto_check_redraw = True,
         qkv_bias = True,
-        attn_out_bias = True
+        attn_out_bias = True,
+        shift_tokens = False
     ):
         super().__init__()
         layers = nn.ModuleList([])
-        
-        local_attn_heads = cast_tuple(local_attn_heads)  # eg. (4, )  -> (0,)
+        local_attn_heads = cast_tuple(local_attn_heads)  # eg. (4, )
         local_attn_heads = local_attn_heads * depth if len(local_attn_heads) == 1 else local_attn_heads  # eg. (4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4)
-        
         assert len(local_attn_heads) == depth, 'tuple specifying number of local attention heads per depth must be equal to the total depth'
         assert all(map(lambda n: n >= 0 and n <= heads, local_attn_heads)), 'local attention head value must be less than the total number of heads'
-        # print("local_attn_heads : ", local_attn_heads)
+
         if use_scalenorm:  # 보통 use_scalenorm = False
             wrapper_fn = partial(PreScaleNorm, dim)
         elif use_rezero:   # 보통 use_rezero = False
@@ -604,25 +593,42 @@ class Performer(nn.Module):
             wrapper_fn = partial(PreLayerNorm, dim)  # eg. dim=512
 
         for _, local_heads in zip(range(depth), local_attn_heads):
-            layers.append(nn.ModuleList([  # f, g
-                wrapper_fn(SelfAttention(dim, causal = causal, condition_len = condition_len, heads = heads, dim_head = dim_head, local_heads = local_heads, local_window_size = local_window_size, nb_features = nb_features, generalized_attention = generalized_attention, kernel_fn = kernel_fn, dropout = attn_dropout, no_projection = no_projection, qkv_bias = qkv_bias, attn_out_bias = attn_out_bias)),
-                wrapper_fn(Chunk(ff_chunks, FeedForward(dim, mult = ff_mult, dropout = ff_dropout, glu = ff_glu), along_dim = 1))
-            ]))
+            # layers.append(nn.ModuleList([  # f, g
+            #     wrapper_fn(SelfAttention(dim, causal = causal, condition_len = condition_len, heads = heads, dim_head = dim_head, local_heads = local_heads, local_window_size = local_window_size, nb_features = nb_features, generalized_attention = generalized_attention, kernel_fn = kernel_fn, dropout = attn_dropout, no_projection = no_projection, qkv_bias = qkv_bias, attn_out_bias = attn_out_bias)),
+            #     wrapper_fn(Chunk(ff_chunks, FeedForward(dim, mult = ff_mult, dropout = ff_dropout, glu = ff_glu), along_dim = 1))
+            # ]))
+        
+            attn = SelfAttention(dim, 
+                                 causal = causal, 
+                                 condition_len = condition_len, 
+                                 heads = heads, 
+                                 dim_head = dim_head, 
+                                 local_heads = local_heads, 
+                                 local_window_size = local_window_size, 
+                                 nb_features = nb_features, 
+                                 chunk_size= chunk_size, 
+                                 generalized_attention = generalized_attention, 
+                                 kernel_fn = kernel_fn, 
+                                 dropout = attn_dropout, 
+                                 no_projection = no_projection, 
+                                 qkv_bias = qkv_bias, 
+                                 attn_out_bias = attn_out_bias
+                                 )
+            ff = Chunk(ff_chunks, FeedForward(dim, mult = ff_mult, dropout = ff_dropout, glu = ff_glu), along_dim = 1)
 
+            if shift_tokens:
+                shift = (0, 1) if causal else (-1, 0, 1)
+                attn, ff = map(lambda t: PreShiftTokens(shift, t), (attn, ff))
+
+            attn, ff = map(wrapper_fn, (attn, ff))
+            layers.append(nn.ModuleList([attn, ff]))
+            
             if not cross_attend:
                 continue
 
             layers.append(nn.ModuleList([
-                wrapper_fn(CrossAttention(
-                    dim, heads = heads, dim_head = dim_head, nb_features = nb_features, 
-                    generalized_attention = generalized_attention, kernel_fn = kernel_fn, 
-                    dropout = attn_dropout, no_projection = no_projection, qkv_bias = qkv_bias, 
-                    attn_out_bias = attn_out_bias)),
-                wrapper_fn(Chunk(ff_chunks, FeedForward(dim, 
-                                                        mult = ff_mult, 
-                                                        dropout = ff_dropout, 
-                                                        glu = ff_glu), 
-                                 along_dim = 1))
+                wrapper_fn(CrossAttention(dim, heads = heads, dim_head = dim_head, nb_features = nb_features, generalized_attention = generalized_attention, kernel_fn = kernel_fn, dropout = attn_dropout, no_projection = no_projection, qkv_bias = qkv_bias, attn_out_bias = attn_out_bias)),
+                wrapper_fn(Chunk(ff_chunks, FeedForward(dim, mult = ff_mult, dropout = ff_dropout, glu = ff_glu), along_dim = 1))
             ]))
 
         execute_type = ReversibleSequence if reversible else SequentialSequence
@@ -641,27 +647,17 @@ class Performer(nn.Module):
         self.proj_updater.feature_redraw_interval = None
 
     def forward(self, x, **kwargs):  # x: [B, seq_len, dim]   kwargs = {'pos_emb': [1, seq_len, head_dim], 'mask': [B, seq_len]}
-        # print(x.shape) torch.Size([b, 512, 768])
-        s = time.time()
         if self.auto_check_redraw:   # auto_check_redraw = True
             self.proj_updater.redraw_projections()  # calls_since_last_redraw가 interval을 넘어가면 redraw
-        # print(time.time()-s) #  0.396747350692749 0.0005424022674560547 0.0003266334533691406 0.0004706382751464844
-        # print("self.proj_updater.redraw_projections in auto_check_redraw")
+        return self.net(x, **kwargs) # -> [B, seq_len, dim]
 
-        s = time.time()
-        out =self.net(x, **kwargs) # -> [B, seq_len, dim]
-        # print(out.shape) #torch.Size([1, 512, 768]) 
-        # print(time.time()-s) #1.7498853206634521 # 1.6896142959594727 1.794043779373169  1.788789987564087
-        # print("self.proj_updater.redraw_projections")
-        
-        return out 
 
 class PerformerLM(nn.Module):
     def __init__(
         self,
         *,
-        num_tokens,
         max_seq_len,
+        num_tokens,
         dim,
         depth,
         heads,
@@ -672,6 +668,7 @@ class PerformerLM(nn.Module):
         condition_len = 0,
         ff_mult = 4,
         nb_features = None,
+        chunk_size = 128,
         feature_redraw_interval = 1000,
         reversible = False,
         ff_chunks = 1,
@@ -680,7 +677,7 @@ class PerformerLM(nn.Module):
         ff_dropout = 0.,
         attn_dropout = 0.,
         generalized_attention = False,
-        kernel_fn = nn.ReLU(),
+        kernel_fn = nn.ReLU(inplace = True), # inplace 하면 input으로 들어온 것 자체를 수정하겠다는 뜻. 메모리 usage가 좀 좋아짐. 하지만 input을 없앰.
         use_scalenorm = False,
         use_rezero = False,
         cross_attend = False,
@@ -691,14 +688,16 @@ class PerformerLM(nn.Module):
         axial_position_shape = None,
         auto_check_redraw = True,
         qkv_bias = False,
-        attn_out_bias = False
+        attn_out_bias = False,
+        shift_tokens = False
     ):
         super().__init__()
         local_attn_heads = cast_tuple(local_attn_heads)  # eg. 4 -> (4, )
-
         self.max_seq_len = max_seq_len
-        self.token_emb = nn.Embedding(num_tokens, dim)
+        if not chunk_size:
+            chunk_size = max_seq_len
 
+        self.token_emb = nn.Embedding(num_tokens, dim)
         if rotary_position_emb:  # 보통 rotary_position_emb = True
             self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len)
             self.layer_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len)
@@ -712,9 +711,11 @@ class PerformerLM(nn.Module):
 
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult, 
-            nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero, 
-            ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
+        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, 
+                                   condition_len, ff_mult, nb_features, chunk_size, feature_redraw_interval, 
+                                   reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm,
+                                   use_rezero, ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, 
+                                   auto_check_redraw, qkv_bias, attn_out_bias, shift_tokens)
         self.norm = nn.LayerNorm(dim)
         self.to_out = nn.Linear(dim, num_tokens) if not tie_embed else None
 
@@ -741,7 +742,7 @@ class PerformerLM(nn.Module):
 
         # norm and to logits
         x = self.norm(x)
-
+        
         if return_encodings:   # 보통 False
             return x
 
@@ -771,6 +772,7 @@ class PerformerLM_i2t(nn.Module):
         condition_len = 0,
         ff_mult = 4,
         nb_features = None,
+        chunk_size = 128,
         feature_redraw_interval = 1000,
         reversible = False,
         ff_chunks = 1,
@@ -779,7 +781,7 @@ class PerformerLM_i2t(nn.Module):
         ff_dropout = 0.,
         attn_dropout = 0.,
         generalized_attention = False,
-        kernel_fn = nn.ReLU(),
+        kernel_fn = nn.ReLU(inplace = True), # inplace 하면 input으로 들어온 것 자체를 수정하겠다는 뜻. 메모리 usage가 좀 좋아짐. 하지만 input을 없앰.
         use_scalenorm = False,
         use_rezero = False,
         cross_attend = False,
@@ -790,6 +792,7 @@ class PerformerLM_i2t(nn.Module):
         axial_position_shape = None,
         auto_check_redraw = True,
         qkv_bias = False,
+        shift_tokens = False,
         attn_out_bias = False,
         img_fmap_size = 0,
     ):
@@ -799,7 +802,9 @@ class PerformerLM_i2t(nn.Module):
         self.condition_len = condition_len
         local_attn_heads = cast_tuple(local_attn_heads)
         self.dim = dim
-        
+        if not chunk_size:
+            chunk_size = max_seq_len
+
         # img;
         if condition_len != 0:
             self.image_token_emb = nn.Embedding(num_img_tokens, dim)
@@ -820,9 +825,11 @@ class PerformerLM_i2t(nn.Module):
 
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult, 
-            nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero, 
-            ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
+        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, 
+                                   condition_len, ff_mult, nb_features, chunk_size, feature_redraw_interval, 
+                                   reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, 
+                                   use_rezero, ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, 
+                                   auto_check_redraw, qkv_bias, attn_out_bias, shift_tokens)
         self.norm = nn.LayerNorm(dim)
         self.to_out = nn.Linear(dim, num_tokens) if not tie_embed else None
 
@@ -875,3 +882,58 @@ class PerformerLM_i2t(nn.Module):
             return self.to_out(x)  # -> [B, seq_len, num_tokens]
 
         return x @ self.token_emb.weight.t()  # weight tieing했을 시
+    
+    @torch.no_grad()
+    @eval_decorator
+    def generate_texts(
+        # TODO: projection matrix 고정시키기
+        self,
+        images,   # tensor[B, tot_img_len]
+        *,
+        sos_token_idx = None,
+        eos_token_idx = None,
+        pad_token_idx = None,
+        filter_logits_fn = 'top_k',
+        filter_thres = 0.9,
+        temperature = 1.,
+    ):
+        if filter_logits_fn == 'top_k':
+            filter_logits_fn = top_k
+        elif filter_logits_fn == 'top_p':
+            filter_logits_fn = top_p
+        else:
+            raise ValueError('filter_logits_fn must be in (top_k, top_p)')
+        
+        B, image_seq_len, device = *images.shape, images.device
+        total_len = self.max_seq_len
+
+        # [B, image_seq_len+1]에서 시작. 점점 길어질 것임.
+        out = torch.cat(
+            (images, torch.tensor([[sos_token_idx]]*B).to(device)), 
+            dim=-1
+            )
+
+        for cur_len in range(image_seq_len+1, total_len):
+
+            image, text = out[:, :image_seq_len], out[:, image_seq_len:]
+
+            logits = self(image, text)[:, -1, :] # -> logits: [B, num_text_tokens]
+            filtered_logits = filter_logits_fn(logits, thres = filter_thres)
+            probs = F.softmax(filtered_logits / temperature, dim = -1) # [B, num_text_tokens]
+            sample = torch.multinomial(probs, 1) # [B, 1]
+ 
+            out = torch.cat((out, sample), dim=-1)
+
+            # break check
+            if ( (out[:, image_seq_len:] == eos_token_idx).sum(dim=-1) > 0 ).sum() == B:
+                break
+
+
+        text_seq = out[:, image_seq_len:]  # [B, <text_seq_len]
+
+        # postprocess
+        indices = [list(row).index(eos_token_idx) if eos_token_idx in row else -1 for row in text_seq]
+        for row, idx in enumerate(indices):
+            if idx >= 0:
+                text_seq[row, idx+1:] = pad_token_idx
+        return text_seq
