@@ -44,14 +44,14 @@ from helpers import *
 from meters import *
 from train_helper import *
 # from trembl_train import *
-from trembl_loader import TREMBLDataset
+from loader_trembl import TREMBLDataset
 import trembl_parser as parser_
 
 import os, warnings
 warnings.simplefilter("default") # Change the filter in this process
 os.environ["PYTHONWARNINGS"] = "default" # Also affect subprocesses
 
-from transformer_pytorch.transformer_performer import TransformerPerformerLM
+from transformer_pytorch.transformer_pytorch import TransformerLM
 from transformer_pytorch.autoregressive_wrapper import AutoregressiveWrapper
 
 
@@ -106,24 +106,27 @@ def main_worker(args: argparse.Namespace):
     args.local_rank = args.rank * args.ngpus_per_node + gpu
     args.batch_size = int(args.batch_size / args.ngpus_per_node)
 
+    vocab = np.load(args.vocab_path, allow_pickle=True)
+    pad_idx = vocab["[PAD]"]
+    args.num_tokens = len(vocab)  # NOTE: text vocab size
+
     ## Dataset settings    
-    print("\nCXR Dataset Loading...")
+    print("\n TrEMBL Dataset Loading...")
     dirs = glob.glob(args.dataset_dir+"*/")
     target_dir = [direc for direc in dirs if str(args.max_seq_len) in direc][0]
     args.train_file = glob.glob(target_dir+"train*")[0]
     args.val_file = glob.glob(target_dir+"val*")[0]
-    train_ds = TREMBLDataset(args.train_file, args.max_seq_len)
+    train_ds = TREMBLDataset(args.train_file, args.max_seq_len, pad_idx)
     train_sampler = distributed.DistributedSampler(train_ds, drop_last=True, seed=args.seed) 
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, num_workers=args.num_workers, sampler=train_sampler)
-    val_ds = TREMBLDataset(args.val_file, args.max_seq_len)
+    val_ds = TREMBLDataset(args.val_file, args.max_seq_len, pad_idx)
     val_sampler = distributed.DistributedSampler(val_ds, drop_last=True, seed=args.seed)
     val_dl = DataLoader(val_ds, batch_size=args.batch_size, pin_memory=True, num_workers=args.num_workers, sampler=val_sampler)
 
-    vocab = np.load(args.vocab_dir, allow_pickle=True)
 
     if gpu == 0:
         if args.wandb:
-            wandb.init(dir=args.save_dir_base, config = args, project="SUT_PerformersSLiMfin_"+TODAY)
+            wandb.init(dir=args.save_dir_base, config = args, project="SUT_PerformersSLiMfinfin_"+TODAY)
         print("\n")
         print("CUDNN VERSION: {}".format(torch.backends.cudnn.version()))
         print("is cuda available? :", args.cuda)
@@ -139,7 +142,7 @@ def main_worker(args: argparse.Namespace):
         print("val_dl ", len(val_dl))
 
         ## Make DIRs
-        exp_name = f"sut_transperf_generalised_{TODAY}{NOW}_txt{args.max_seq_len}_h{args.n_heads}_l{args.n_layers}_dff{args.ffn_dim}_d{args.dim}_bz{args.batch_size}"
+        exp_name = f"sut_transperf_generalised_{TODAY}{NOW}_txt{args.max_seq_len}_h{args.heads}_l{args.depth}_dff{args.d_ff}_d{args.dim}_bz{args.batch_size}"
         if not os.path.exists(Path(args.save_dir_base)):
             os.makedirs(Path(args.save_dir_base), exist_ok=True)
         save_dir = os.path.join(args.save_dir_base, exp_name+"/")
@@ -160,29 +163,32 @@ def main_worker(args: argparse.Namespace):
     # else:
     #     raise "The kernel_type argument has to be one of followings; 'trans', 'favor', 'generalised'"
     
-    args.attn_type = 'transperf'
+    args.attn_type = 'perf'
     args.kernel_type = 'generalised'
     args.generalized_attention = True
     args.no_projection = False
+    args.causal = 'linear'
     args.clip_grad=False
-    args.ff_mult = int(args.ffn_dim / args.dim)
+    args.ff_mult = int(args.d_ff / args.dim)
     
-    model = TransformerPerformerLM(
+    model = TransformerLM(
+        num_tokens = args.num_tokens,
+        max_seq_len = args.max_seq_len,
         dim = args.dim,
-        depth = args.n_layers,
-        seq_len = args.max_seq_len,
-        num_tokens=args.num_tokens,
-        heads = args.n_heads,
-        attn_dropout = args.attn_dropout,
-        ff_dropout = args.ff_dropout,
-        emb_dropout=args.emb_dropout,
-        ff_mult = args.ff_mult,
-        rotary_emb=args.rotary_emb,
-        sandwich_norm=args.sandwich_norm,
+        depth = args.depth,
         causal=args.causal,
         reversible=args.reversible,
+        heads = args.heads,
+        dim_head = args.dim_head,
+        ff_mult = args.ff_mult,
+        nb_features=args.nb_features,
+        attn_dropout = args.attn_dropout,
+        ff_dropout = args.ff_dropout,
+        stable_softmax=args.stable_softmax,
+        sandwich_norm=args.sandwich_norm,
+        shift_tokens = args.shift_tokens,
+        rotary_emb=args.rotary_emb,
         attn_types=args.attn_type,
-                
         generalized_attention = args.generalized_attention,
         no_projection = args.no_projection,
     )
@@ -199,7 +205,8 @@ def main_worker(args: argparse.Namespace):
     trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\nNumber of trainable params: {trainable_parameters}")
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nNumber of TOTAL params: {total_params}")
+    print(f"Number of TOTAL params: {total_params}")
+
     param_dicts = [{"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},]
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr, betas=(0.9, 0.98), eps=1e-09, weight_decay=args.weight_decay)
     
@@ -220,8 +227,13 @@ def main_worker(args: argparse.Namespace):
     if gpu == 0 and args.wandb:
         wandb.watch(model)
      
-    ## Benchmark
-    print("\nStart Training.. Transformer+Performer Generalised")
+        
+        
+     
+    #!!!!!!!!!!!!!!!!!!!!!!!!!!# Benchmark #!!!!!!!!!!!!!!!!!!!!!!!!!!#
+    
+    print("\nStart Training.. Transformer+Performer Generalised", args.kernel_type)
+    
     ep_secs = []
     best_loss = 1.0
     tot_start = time.monotonic()
@@ -234,7 +246,8 @@ def main_worker(args: argparse.Namespace):
         
         ###!### Training
         iter_time, f_time, b_time =[], [], []
-        for i, batch in enumerate(tqdm.tqdm(train_dl, mininterval=10., desc='training')):
+        for i, batch in tqdm.tqdm(enumerate(train_dl), mininterval=10., leave=True, 
+                                  desc=f'Epoch-{epoch} Iterator', total=len(train_dl),bar_format='{l_bar}{bar:10}{r_bar}'):
             batch_start = time.monotonic()
             adjust_learning_rate(args.lr, optimizer, epoch, i, len(train_dl))
 
@@ -249,8 +262,6 @@ def main_worker(args: argparse.Namespace):
             # for __ in range(args.gradient_accum):
             #!#
             with autocast():
-                tracemalloc.start()
-                forward_trace = tracemalloc.take_snapshot()
                 forward_start = time.monotonic()
                 
                 if args.profiler:
@@ -258,17 +269,15 @@ def main_worker(args: argparse.Namespace):
                         logits, loss = model(seq)
                 else:
                     logits, loss = model(seq)
+                    
             #!#
+            dist.barrier()
                     
             if gpu == 0:
                 f_time.append(np.log2(time.monotonic() - forward_start))
                 forward_time = np.log2(time.monotonic() - forward_start)
-                forward_trace2 = tracemalloc.take_snapshot()                    
                 backward = time.monotonic()
-                tracemalloc.stop()
                 
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats                
             #!#
             scaler.scale(loss).backward()
             #!#
@@ -290,12 +299,11 @@ def main_worker(args: argparse.Namespace):
                 correct = (seq[:, 1:] == torch.argmax(logits, 1))
                 hit_sum = correct.float().sum()
                     
-            if gpu == 0 and args.profile==True:
+            if gpu == 0 and args.profile:
                 iter_time.append(time.monotonic()-batch_start)
                 b_time.append(np.log2(time.monotonic() - backward))
-                forward_top_stats = forward_trace2.compare_to(forward_trace, 'lineno')
                 
-            if i==30 and gpu == 0 and args.profile==True:
+            if i==30 and gpu == 0 and args.profile:
                 if args.profiler==True:
                     print("\ncpu_time_total")
                     print(prof.key_averages(group_by_stack_n=5).table(sort_by="cpu_time_total", row_limit=5))
@@ -310,10 +318,6 @@ def main_worker(args: argparse.Namespace):
                 print("Model Forward Timing (log_2(T)(sec)", round(np.mean(f_time), 3))
                 print("Model Backward Timing (log_2(T)(sec)", round(np.mean(b_time), 3))           
                 print("\n\n")
-                print("Tracemalloc forward_top_stats")
-                for idx in range(len(forward_top_stats)):
-                    print(forward_top_stats[idx])
-                print("\n")
                 print("iter time : ",  round(np.mean(iter_time), 3), "\n")
                 print("\n")
                 exit()
@@ -333,45 +337,54 @@ def main_worker(args: argparse.Namespace):
                 
                 
             ###!### Validation
-            if i+1 % args.validate_every == 0:
+            if int(i+1) % args.validate_every == 0 and i != 0:
                 model.eval()
+                _val_avg_loss, _val_avg_ppl = [], []
                 with torch.no_grad():
-                    for j, batch in enumerate(tqdm.tqdm(val_dl)):
+                    for j, batch in tqdm.tqdm(enumerate(val_dl), mininterval=10., leave=True, 
+                                              desc=f'validation', total=len(val_dl), bar_format='{l_bar}{bar:10}{r_bar}'):
                         seq = batch['seq'].to(gpu).long()#.cuda(args.gpu, non_blocking=True)
                         val_logits, val_loss = model(seq)
-
+                        val_loss = val_loss.item()
+                        
+                        if gpu == 0:
+                            _val_avg_loss.append(val_loss)
+                            val_ppl = math.exp(val_loss)
+                            _val_avg_ppl.append(val_ppl)
+                            val_logits = val_logits.transpose(1, 2)
+                            correct = (seq[:, 1:] == torch.argmax(val_logits, 1))
+                            val_hit_sum = correct.float().sum()
+                        
+                        if gpu == 0 and args.wandb:
+                            wandb.log({
+                            "valid hit_sum": val_hit_sum,
+                            "valid loss": val_loss,
+                            "valid ppl": val_ppl,
+                            })
+                
                 if gpu == 0:
-                    print(f'training loss: {loss.item()} | validation loss: {val_loss.item()}')
-                    val_ppl = math.exp(val_loss)
-                    val_logits = val_logits.transpose(1, 2)
-                    correct = (seq[:, 1:] == torch.argmax(val_logits, 1))
-                    val_hit_sum = correct.float().sum()
-                    
-                if gpu == 0 and args.wandb:
-                    wandb.log({
-                    "valid hit_sum": val_hit_sum,
-                    "valid loss": val_loss,
-                    "valid ppl": val_ppl,
-                    })
+                    val_avg_loss = np.array(_val_avg_loss).mean()
+                    val_avg_ppl = np.array(_val_avg_ppl).mean()
+                    print(f'\nEpoch {epoch}: validation loss: {val_avg_loss} | validation ppl: {val_avg_ppl}\n')
+                  
                 
             
-            if i+1 % args.generate_every == 0 and i != 0 and gpu ==0:
+            if int(i+1) % args.generate_every == 0 and i != 0 and gpu ==0:
+                b = args.generate_how_many
                 model.eval()
-
-                prime = index2base(seq[:-1], vocab)
-                print(f'%s \n\n %s', (prime, '*' * 100))
-
-                sample = model.module.generate(seq[:1, :-1], args.max_seq_len)
-                output_str = index2base(sample, vocab)
-                print(output_str)
-            
-            
-        # remember best prec@1 and save checkpoint
+                prime = index2base_batch(seq[:b], vocab) #[:-1]
+                sample = model.module.generate(seq[:b], args.max_seq_len)#, mask=input_mask)
+                output_str = index2base_batch(sample, vocab)
+                for itr in range(b):
+                    print(''.join(prime[itr]), "\n", '*' * 100)
+                    print(''.join(output_str[itr]), "\n\n")
+                    
+        # save model & log
         if gpu == 0:
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
             save_checkpoint({
-                'epoch': epoch + 1,
+                'epoch': epoch,
                 'model': "transformer",
                 'state_dict': model.state_dict(),
                 'best_loss': best_loss,
@@ -386,7 +399,7 @@ def main_worker(args: argparse.Namespace):
             sys.exit(1)
 
     dist.destroy_process_group()
-    print("\nThe whole ", epoch, " epoch took for", time.monotonic()-tot_start, "\n")
+    print("\nThe whole ", epoch, " epoch took for", time.monotonic()-tot_start, "\n", args.kernel_type)
 
 
 

@@ -45,7 +45,6 @@ class VQGanVAE(nn.Module):
 
         # f as used in https://github.com/CompVis/taming-transformers#overview-of-pretrained-models
         self.f = config.model.params.ddconfig.resolution / config.model.params.ddconfig.attn_resolutions[0]
-        self.fmap_size = config.model.params.ddconfig.attn_resolutions[0]
         self.num_layers = int(log(self.f)/log(2))
         self.image_size = config.model.params.ddconfig.resolution
         self.num_tokens = config.model.params.n_embed

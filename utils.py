@@ -1,5 +1,6 @@
 
 from functools import reduce
+from numpy.lib.function_base import blackman
 
 from torch.nn import ModuleList
 import torch.nn.functional as F
@@ -8,19 +9,29 @@ import math
 import torch
 import numpy as np
 
-def setup_for_distributed(is_master):
-    """
-    This function disables printing when not in master process
-    """
-    import builtins as __builtin__
-    builtin_print = __builtin__.print
 
-    def print(*args, **kwargs):
-        force = kwargs.pop('force', False)
-        if is_master or force:
-            builtin_print(*args, **kwargs)
 
-    __builtin__.print = print
+def base2index(base, vocab):
+    return vocab[base]
+
+def index2base_batch(base, vocab):
+    batch_seq=[]
+    for b in range(len(base)):
+        seq = []
+        for b in base[b]:
+            for v in vocab:
+                if vocab[v] == b:
+                    seq.append(v)
+        batch_seq.append(seq)
+    return batch_seq #vocab[base]
+
+def index2base(base, vocab):
+    seq = []
+    for b in base:
+        for v in vocab:
+            if vocab[v] == b:
+                seq.append(v)
+    return seq #vocab[base]
 
 
 def itos(self, field, batch):  # batch에서 원본 sentence 얻는 함수
@@ -63,6 +74,17 @@ def clones(module, N):
         ModuleList는 목록에 하위 모듈을 보관. 이때 모듈들은 파이썬 리스트들 처럼 인덱스를 사용할 수 있다.
     """
     return ModuleList([copy.deepcopy(module) for i in range(N)])
+
+
+def subsequent_mask(size):
+    """
+    디코더에서 어텐션 스코어 매트릭스에서 이후의 값들에 대해 -∞으로 마스킹 처리해주기 위한 함수. 
+    (1, size, size)의 마스크를 리턴한다.
+    "Mask out subsequent positions."
+    """
+    attn_shape = (1, size, size)
+    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
+    return torch.from_numpy(subsequent_mask) == 0
 
 
 def log(t, eps=1e-9):
