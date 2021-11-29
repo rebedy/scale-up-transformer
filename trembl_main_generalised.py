@@ -197,7 +197,7 @@ def main_worker(args: argparse.Namespace):
         tie_embed = args.tie_embed,
         rotary_position_emb = args.rotary_position_emb,
     )
-    
+
     # model = PerformerLM(**kargs_performerLM_i2t)
     model = AutoregressiveWrapper(model)
     model = model.to(memory_format=torch.contiguous_format).cuda(gpu)
@@ -238,6 +238,7 @@ def main_worker(args: argparse.Namespace):
     #!!!!!!!!!!!!!!!!!!!!!!!!!!# Benchmark #!!!!!!!!!!!!!!!!!!!!!!!!!!#
     
     print("\nStart Training.. Generalised", args.kernel_type)
+    
     ep_secs = []
     best_loss = 1.0
     tot_start = time.monotonic()

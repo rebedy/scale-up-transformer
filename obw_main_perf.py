@@ -16,319 +16,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 # os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 #!#  
 """
-CUDA_VISIBLE_DEVICES=6 python3 -m toNumber of TOTAL params: 48755012
-DistributedDataParallel(
-  (module): TransformerLM(
-    (token_emb): Embedding(28996, 512)
-    (pos_emb): AbsolutePositionalEmbedding(
-      (emb): Embedding(256, 512)
-    )
-    (layer_pos_emb): Always()
-    (dropout): Dropout(p=0.0, inplace=False)
-    (transformer): Transformer(
-      (net): SequentialSequence(
-        (layers): ModuleList(
-          (0): ModuleList(
-            (0): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FAVORAttention(
-                (fast_attention): FastAttention(
-                  (kernel_fn): ReLU(inplace=True)
-                )
-                (to_q): Linear(in_features=512, out_features=512, bias=False)
-                (to_k): Linear(in_features=512, out_features=512, bias=False)
-                (to_v): Linear(in_features=512, out_features=512, bias=False)
-                (to_out): Linear(in_features=512, out_features=512, bias=False)
-                (dropout): Dropout(p=0.1, inplace=False)
-              )
-            )
-            (1): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FeedForward(
-                (w1): Linear(in_features=512, out_features=2048, bias=True)
-                (act): GELU()
-                (dropout): Dropout(p=0.1, inplace=False)
-                (w2): Linear(in_features=2048, out_features=512, bias=True)
-              )
-            )
-          )
-          (1): ModuleList(
-            (0): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FAVORAttention(
-                (fast_attention): FastAttention(
-                  (kernel_fn): ReLU(inplace=True)
-                )
-                (to_q): Linear(in_features=512, out_features=512, bias=False)
-                (to_k): Linear(in_features=512, out_features=512, bias=False)
-                (to_v): Linear(in_features=512, out_features=512, bias=False)
-                (to_out): Linear(in_features=512, out_features=512, bias=False)
-                (dropout): Dropout(p=0.1, inplace=False)
-              )
-            )
-            (1): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FeedForward(
-                (w1): Linear(in_features=512, out_features=2048, bias=True)
-                (act): GELU()
-                (dropout): Dropout(p=0.1, inplace=False)
-                (w2): Linear(in_features=2048, out_features=512, bias=True)
-              )
-            )
-          )
-          (2): ModuleList(
-            (0): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FAVORAttention(
-                (fast_attention): FastAttention(
-                  (kernel_fn): ReLU(inplace=True)
-                )
-                (to_q): Linear(in_features=512, out_features=512, bias=False)
-                (to_k): Linear(in_features=512, out_features=512, bias=False)
-                (to_v): Linear(in_features=512, out_features=512, bias=False)
-                (to_out): Linear(in_features=512, out_features=512, bias=False)
-                (dropout): Dropout(p=0.1, inplace=False)
-              )
-            )
-            (1): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FeedForward(
-                (w1): Linear(in_features=512, out_features=2048, bias=True)
-                (act): GELU()
-                (dropout): Dropout(p=0.1, inplace=False)
-                (w2): Linear(in_features=2048, out_features=512, bias=True)
-              )
-            )
-          )
-          (3): ModuleList(
-            (0): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FAVORAttention(
-                (fast_attention): FastAttention(
-                  (kernel_fn): ReLU(inplace=True)
-                )
-                (to_q): Linear(in_features=512, out_features=512, bias=False)
-                (to_k): Linear(in_features=512, out_features=512, bias=False)
-                (to_v): Linear(in_features=512, out_features=512, bias=False)
-                (to_out): Linear(in_features=512, out_features=512, bias=False)
-                (dropout): Dropout(p=0.1, inplace=False)
-              )
-            )
-            (1): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FeedForward(
-                (w1): Linear(in_features=512, out_features=2048, bias=True)
-                (act): GELU()
-                (dropout): Dropout(p=0.1, inplace=False)
-                (w2): Linear(in_features=2048, out_features=512, bias=True)
-              )
-            )
-          )
-          (4): ModuleList(
-            (0): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FAVORAttention(
-                (fast_attention): FastAttention(
-                  (kernel_fn): ReLU(inplace=True)
-                )
-                (to_q): Linear(in_features=512, out_features=512, bias=False)
-                (to_k): Linear(in_features=512, out_features=512, bias=False)
-                (to_v): Linear(in_features=512, out_features=512, bias=False)
-                (to_out): Linear(in_features=512, out_features=512, bias=False)
-                (dropout): Dropout(p=0.1, inplace=False)
-              )
-            )
-            (1): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FeedForward(
-                (w1): Linear(in_features=512, out_features=2048, bias=True)
-                (act): GELU()
-                (dropout): Dropout(p=0.1, inplace=False)
-                (w2): Linear(in_features=2048, out_features=512, bias=True)
-              )
-            )
-          )
-          (5): ModuleList(
-            (0): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FAVORAttention(
-                (fast_attention): FastAttention(
-                  (kernel_fn): ReLU(inplace=True)
-                )
-                (to_q): Linear(in_features=512, out_features=512, bias=False)
-                (to_k): Linear(in_features=512, out_features=512, bias=False)
-                (to_v): Linear(in_features=512, out_features=512, bias=False)
-                (to_out): Linear(in_features=512, out_features=512, bias=False)
-                (dropout): Dropout(p=0.1, inplace=False)
-              )
-            )
-            (1): PreLayerNorm(
-              (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-              (fn): FeedForward(
-                (w1): Linear(in_features=512, out_features=2048, bias=True)
-                (act): GELU()
-                (dropout): Dropout(p=0.1, inplace=False)
-                (w2): Linear(in_features=2048, out_features=512, bias=True)
-              )
-            )
-          )
-        )
-      )
-      (proj_updater): ProjectionUpdater(
-        (instance): SequentialSequence(
-          (layers): ModuleList(
-            (0): ModuleList(
-              (0): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FAVORAttention(
-                  (fast_attention): FastAttention(
-                    (kernel_fn): ReLU(inplace=True)
-                  )
-                  (to_q): Linear(in_features=512, out_features=512, bias=False)
-                  (to_k): Linear(in_features=512, out_features=512, bias=False)
-                  (to_v): Linear(in_features=512, out_features=512, bias=False)
-                  (to_out): Linear(in_features=512, out_features=512, bias=False)
-                  (dropout): Dropout(p=0.1, inplace=False)
-                )
-              )
-              (1): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FeedForward(
-                  (w1): Linear(in_features=512, out_features=2048, bias=True)
-                  (act): GELU()
-                  (dropout): Dropout(p=0.1, inplace=False)
-                  (w2): Linear(in_features=2048, out_features=512, bias=True)
-                )
-              )
-            )
-            (1): ModuleList(
-              (0): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FAVORAttention(
-                  (fast_attention): FastAttention(
-                    (kernel_fn): ReLU(inplace=True)
-                  )
-                  (to_q): Linear(in_features=512, out_features=512, bias=False)
-                  (to_k): Linear(in_features=512, out_features=512, bias=False)
-                  (to_v): Linear(in_features=512, out_features=512, bias=False)
-                  (to_out): Linear(in_features=512, out_features=512, bias=False)
-                  (dropout): Dropout(p=0.1, inplace=False)
-                )
-              )
-              (1): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FeedForward(
-                  (w1): Linear(in_features=512, out_features=2048, bias=True)
-                  (act): GELU()
-                  (dropout): Dropout(p=0.1, inplace=False)
-                  (w2): Linear(in_features=2048, out_features=512, bias=True)
-                )
-              )
-            )
-            (2): ModuleList(
-              (0): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FAVORAttention(
-                  (fast_attention): FastAttention(
-                    (kernel_fn): ReLU(inplace=True)
-                  )
-                  (to_q): Linear(in_features=512, out_features=512, bias=False)
-                  (to_k): Linear(in_features=512, out_features=512, bias=False)
-                  (to_v): Linear(in_features=512, out_features=512, bias=False)
-                  (to_out): Linear(in_features=512, out_features=512, bias=False)
-                  (dropout): Dropout(p=0.1, inplace=False)
-                )
-              )
-              (1): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FeedForward(
-                  (w1): Linear(in_features=512, out_features=2048, bias=True)
-                  (act): GELU()
-                  (dropout): Dropout(p=0.1, inplace=False)
-                  (w2): Linear(in_features=2048, out_features=512, bias=True)
-                )
-              )
-            )
-            (3): ModuleList(
-              (0): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FAVORAttention(
-                  (fast_attention): FastAttention(
-                    (kernel_fn): ReLU(inplace=True)
-                  )
-                  (to_q): Linear(in_features=512, out_features=512, bias=False)
-                  (to_k): Linear(in_features=512, out_features=512, bias=False)
-                  (to_v): Linear(in_features=512, out_features=512, bias=False)
-                  (to_out): Linear(in_features=512, out_features=512, bias=False)
-                  (dropout): Dropout(p=0.1, inplace=False)
-                )
-              )
-              (1): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FeedForward(
-                  (w1): Linear(in_features=512, out_features=2048, bias=True)
-                  (act): GELU()
-                  (dropout): Dropout(p=0.1, inplace=False)
-                  (w2): Linear(in_features=2048, out_features=512, bias=True)
-                )
-              )
-            )
-            (4): ModuleList(
-              (0): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FAVORAttention(
-                  (fast_attention): FastAttention(
-                    (kernel_fn): ReLU(inplace=True)
-                  )
-                  (to_q): Linear(in_features=512, out_features=512, bias=False)
-                  (to_k): Linear(in_features=512, out_features=512, bias=False)
-                  (to_v): Linear(in_features=512, out_features=512, bias=False)
-                  (to_out): Linear(in_features=512, out_features=512, bias=False)
-                  (dropout): Dropout(p=0.1, inplace=False)
-                )
-              )
-              (1): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FeedForward(
-                  (w1): Linear(in_features=512, out_features=2048, bias=True)
-                  (act): GELU()
-                  (dropout): Dropout(p=0.1, inplace=False)
-                  (w2): Linear(in_features=2048, out_features=512, bias=True)
-                )
-              )
-            )
-            (5): ModuleList(
-              (0): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FAVORAttention(
-                  (fast_attention): FastAttention(
-                    (kernel_fn): ReLU(inplace=True)
-                  )
-                  (to_q): Linear(in_features=512, out_features=512, bias=False)
-                  (to_k): Linear(in_features=512, out_features=512, bias=False)
-                  (to_v): Linear(in_features=512, out_features=512, bias=False)
-                  (to_out): Linear(in_features=512, out_features=512, bias=False)
-                  (dropout): Dropout(p=0.1, inplace=False)
-                )
-              )
-              (1): PreLayerNorm(
-                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-                (fn): FeedForward(
-                  (w1): Linear(in_features=512, out_features=2048, bias=True)
-                  (act): GELU()
-                  (dropout): Dropout(p=0.1, inplace=False)
-                  (w2): Linear(in_features=2048, out_features=512, bias=True)
-                )
-              )
-            )
-          )
-        )
-      )
-    )
-    (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
-    (to_out): Linear(in_features=512, out_features=28996, bias=True)
-  )
-)rch.distributed.launch --nproc_per_node=1 obw_main_perf.py --kernel_type favor  --mpi_port 12366
+CUDA_VISIBLE_DEVICES=6 python3 -m torch.distributed.launch --nproc_per_node=1 obw_main_perf.py --kernel_type favor  --mpi_port 12366
 """
 torch.cuda.empty_cache()
 torch.set_printoptions(profile="full")
@@ -415,8 +103,8 @@ def build_dataloaders(dataset, batch_size, train_test_split=0.1, train_shuffle=F
     train_dataset, eval_dataset = random_split(dataset, (train_len, eval_len))
     train_sampler = distributed.DistributedSampler(train_dataset, drop_last=True, seed=args.seed) 
     val_sampler = distributed.DistributedSampler(eval_dataset, drop_last=True, seed=args.seed)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=train_shuffle, sampler=train_sampler)
-    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=eval_shuffle, sampler=val_sampler)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=train_shuffle, sampler=train_sampler, pin_memory=True)
+    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=eval_shuffle, sampler=val_sampler, pin_memory=True)
     # print(f'''train_dataloader size: {len(train_loader.dataset)} | shuffle: {train_shuffle} | eval_dataloader size: {len(eval_loader.dataset)} | shuffle: {eval_shuffle}''')
     return train_loader, train_sampler, eval_loader, val_sampler
 
@@ -486,11 +174,11 @@ def main_worker(args: argparse.Namespace):
         elif args.kernel_type == 'generalised':
             args.generalized_attention = True
             args.no_projection = False
+            args.clip_grad=False
         elif args.kernel_type == 'no_projection':
             args.generalized_attention = False
             args.no_projection = True
     args.causal = None
-    args.clip_grad=False
     args.ff_mult = int(args.d_ff / args.dim)
     
     model = PerformerLM(
@@ -536,10 +224,6 @@ def main_worker(args: argparse.Namespace):
     param_dicts = [{"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},]
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr, betas=(0.9, 0.98), eps=1e-09, weight_decay=args.weight_decay)
     
-    print(model)
-    exit()
-    
-    dist.barrier()
 
     # Scale learning rate based on global batch size 1*10
     # args.lr = args.lr*float(args.batch_size*args.world_size)/256.
@@ -558,6 +242,7 @@ def main_worker(args: argparse.Namespace):
      
      
     
+    dist.barrier()
         
     #!!!!!!!!!!!!!!!!!!!!!!!!!!# Benchmark #!!!!!!!!!!!!!!!!!!!!!!!!!!#
     
@@ -587,10 +272,7 @@ def main_worker(args: argparse.Namespace):
             seq, input_mask, labels = batch  # _ is input_mask
             seq, input_mask, labels = seq.to(gpu), input_mask.to(gpu), labels.to(gpu)
             ################################################################################
-            # print(seq)
-            # print(input_mask)
-            # print(labels)
-            # exit()
+
             
             # for __ in range(args.gradient_accum):
             #!#
@@ -604,9 +286,6 @@ def main_worker(args: argparse.Namespace):
                 else:
                     logits = model(seq, mask=input_mask)
                     
-            #!#
-            dist.barrier()
-            
             # only calculating loss on masked tokens
             loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index = -100)
             # loss = loss.item()
@@ -615,12 +294,12 @@ def main_worker(args: argparse.Namespace):
             if gpu == 0:
                 f_time.append(np.log2(time.monotonic() - forward_start))
                 forward_time = np.log2(time.monotonic() - forward_start)
+                torch.cuda.empty_cache()
                 backward = time.monotonic()
                 
-            # torch.cuda.empty_cache()
-            # torch.cuda.reset_peak_memory_stats                
             #!#
             scaler.scale(loss).backward()
+            dist.barrier()
             #!#
             
             if args.clip_grad:
@@ -639,6 +318,8 @@ def main_worker(args: argparse.Namespace):
                 logits = logits.transpose(1, 2)
                 correct = (seq == torch.argmax(logits, 1))
                 hit_sum = correct.float().sum()
+                
+            torch.cuda.empty_cache()
                     
             if gpu == 0 and args.profile:
                 iter_time.append(time.monotonic()-batch_start)
@@ -689,7 +370,7 @@ def main_worker(args: argparse.Namespace):
                         seq, input_mask, labels = batch  # _ is input_mask
                         seq, input_mask, labels = seq.to(gpu), input_mask.to(gpu), labels.to(gpu)
                         ################################################################################
-                        val_logits = model(seq, input_mask=input_mask)
+                        val_logits = model(seq, mask=input_mask)
                         dist.barrier()
                     
                         val_loss = F.cross_entropy(val_logits.transpose(1, 2), labels, ignore_index = -100)
@@ -719,8 +400,8 @@ def main_worker(args: argparse.Namespace):
                     val_avg_ppl = np.array(_val_avg_ppl).mean()
                     val_avg_acc= np.array(_val_avg_acc).mean()
                     print(f'\nEpoch {epoch}: validation loss: {val_avg_loss} | validation ppl: {val_avg_ppl} | validation acc: {val_avg_acc}\n')
-                  
                 
+                dist.barrier()
                 is_best = val_loss < best_loss
                 best_loss = min(loss, best_loss)
                 save_checkpoint({
@@ -745,6 +426,7 @@ def main_worker(args: argparse.Namespace):
                         
             # save model & log
         if gpu == 0:
+            dist.barrier()
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
             save_checkpoint({

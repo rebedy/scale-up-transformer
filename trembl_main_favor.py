@@ -218,9 +218,6 @@ def main_worker(args: argparse.Namespace):
 
     dist.barrier()
 
-    print(model)
-    exit()
-    
     # Scale learning rate based on global batch size 1*10
     # args.lr = args.lr*float(args.batch_size*args.world_size)/256.
             

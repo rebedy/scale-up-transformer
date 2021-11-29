@@ -1,11 +1,11 @@
 """
 CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_trans.py --mpi_port 12476
 
-CUDA_VISIBLE_DEVICES=4 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_main_favor.py --kernel_type favor --mpi_port 12454
-CUDA_VISIBLE_DEVICES=5 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_main_generalised.py --kernel_type generalised --mpi_port 12365
+CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_transperf_favor.py --kernel_type favor --mpi_port 12512
+CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_transperf_generalised.py --kernel_type generalised --mpi_port 16523
 
-CUDA_VISIBLE_DEVICES=6 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_transperf_favor.py --kernel_type favor --mpi_port 12512
-CUDA_VISIBLE_DEVICES=7 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_transperf_generalised.py --kernel_type generalised --mpi_port 16523
+CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_main_favor.py --kernel_type favor --mpi_port 12454
+CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 trembl_main_generalised.py --kernel_type generalised --mpi_port 12365
 """
 import argparse
 from helpers import *
@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--dataset_dir', default="/home/data_storage/dylee_135/trembl/", type=str)
 parser.add_argument('--vocab_path', default="metadata/trembl_vocab.pkl", type=str)
                         #!#
-parser.add_argument('--max_seq_len', default=256, type=int) # report 최대 길이
+parser.add_argument('--max_seq_len', default=1024, type=int) # report 최대 길이
 
 
 ## Model args
@@ -74,7 +74,7 @@ parser.add_argument('--epochs', default=3, type=int)
 parser.add_argument('--activation', default="relu", type=str)
 
 ##! LOG 
-parser.add_argument('--wandb', default=True, type=str2bool, help='Whether to use wandb log or not.') 
+parser.add_argument('--wandb', default=False, type=str2bool, help='Whether to use wandb log or not.') 
 parser.add_argument('--profiler', default=False, type=bool, help='Only run 10 iterations for profiling.')
 parser.add_argument('--profile', default=True, type=bool, help='Only run 10 iterations for profiling.')
 parser.add_argument('--print_freq', '-p', default=100, type=int, metavar='N', help='print frequency (default: 10)')

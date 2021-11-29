@@ -163,7 +163,7 @@ def main_worker(args: argparse.Namespace):
     # else:
     #     raise "The kernel_type argument has to be one of followings; 'trans', 'favor', 'generalised'"
 
-    args.attn_type = 'full'
+    args.attn_types = 'full'
     args.kernel_type = None
     args.generalized_attention = False
     args.no_projection = False 
@@ -176,22 +176,24 @@ def main_worker(args: argparse.Namespace):
         max_seq_len = args.max_seq_len,
         dim = args.dim,
         depth = args.depth,
-        causal=args.causal,
-        reversible=args.reversible,
         heads = args.heads,
         dim_head = args.dim_head,
+        causal=args.causal,
         ff_mult = args.ff_mult,
         nb_features=args.nb_features,
+        reversible=args.reversible,
+        ff_glu = args.ff_glu,
         attn_dropout = args.attn_dropout,
         ff_dropout = args.ff_dropout,
         stable_softmax=args.stable_softmax,
-        sandwich_norm=args.sandwich_norm,
+        # sandwich_norm=args.sandwich_norm,
         shift_tokens = args.shift_tokens,
-        rotary_emb=args.rotary_emb,
-        attn_types=args.attn_type,
+        rotary_position_emb=args.rotary_position_emb,
+        attn_types=args.attn_types,
         generalized_attention = args.generalized_attention,
         no_projection = args.no_projection,
-    )
+    )    
+     
     
     # model = PerformerLM(**kargs_performerLM_i2t)
     model = AutoregressiveWrapper(model)
@@ -259,6 +261,7 @@ def main_worker(args: argparse.Namespace):
             mask = batch['mask'].to(gpu).long()#.cuda(args.gpu, non_blocking=True)
             ################################################################################
         
+        
             # for __ in range(args.gradient_accum):
             #!#
             with autocast():
@@ -270,16 +273,16 @@ def main_worker(args: argparse.Namespace):
                 else:
                     logits, loss = model(seq)
             
-            #!#
-            dist.barrier()
             
             if gpu == 0:
                 f_time.append(np.log2(time.monotonic() - forward_start))
                 forward_time = np.log2(time.monotonic() - forward_start)
+                torch.cuda.empty_cache()
                 backward = time.monotonic()
                 
             #!#
             scaler.scale(loss).backward()
+            dist.barrier()
             #!#
             
             if args.clip_grad:
@@ -288,6 +291,7 @@ def main_worker(args: argparse.Namespace):
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            torch.cuda.empty_cache()
                     
             if gpu == 0:
                 batch_time = time.monotonic()-batch_start
@@ -367,8 +371,19 @@ def main_worker(args: argparse.Namespace):
                     val_avg_ppl = np.array(_val_avg_ppl).mean()
                     print(f'\nEpoch {epoch}: validation loss: {val_avg_loss} | validation ppl: {val_avg_ppl}\n')
                   
+                dist.barrier()
+                is_best = val_loss < best_loss
+                best_loss = min(loss, best_loss)
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'model': "transformer",
+                    'state_dict': model.state_dict(),
+                    'best_loss': best_loss,
+                    'optimizer' : optimizer.state_dict(),
+                    }, 
+                                is_best, 
+                                filename=os.path.join(save_dir, f"epoch={epoch:06}.ckpt"))
                 
-            
             if int(i+1) % args.generate_every == 0 and i != 0 and gpu ==0:
                 b = args.generate_how_many
                 model.eval()
@@ -381,6 +396,7 @@ def main_worker(args: argparse.Namespace):
         
         # save model & log
         if gpu == 0:
+            dist.barrier()
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
             save_checkpoint({
@@ -394,8 +410,8 @@ def main_worker(args: argparse.Namespace):
                             filename=os.path.join(save_dir, f"epoch={epoch:06}.ckpt"))
             print("\n", epoch, " epoch took for", time.monotonic()-start)
             
-        if not math.isfinite(loss):
-            print(f'Evaluation loss is {loss}, stopping training!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+        if not math.isfinite(val_avg_loss):
+            print(f'Evaluation loss is {val_avg_loss}, stopping training!!!!!!!!!!!!!!!!!!!!!!!!!!!')
             sys.exit(1)
 
     dist.destroy_process_group()
