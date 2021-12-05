@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 import numpy as np
 import math
+import time
 import os
 from functools import partial
 
@@ -64,7 +65,7 @@ class Transformer(nn.Module):
             qkv_bias = True,
             attn_out_bias = True,
             no_projection = False,
-            FAVOR = True
+            FAVOR = False
     ):
         super().__init__()
         layers = nn.ModuleList([])
@@ -161,7 +162,7 @@ class TransformerLM_i2t(nn.Module):
             qkv_bias=False,
             attn_out_bias=False,
             img_fmap_size=0,
-            FAVOR=True,
+            FAVOR=False,
             **kwargs
     ):
         super().__init__()
@@ -339,6 +340,7 @@ class TransformerLM_Protein(nn.Module):
                  qkv_bias=False,
                  attn_out_bias=False,
                  FAVOR=False,
+                 **kwargs
                  ):
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -346,7 +348,7 @@ class TransformerLM_Protein(nn.Module):
         self.dim = dim
 
         # input embedding
-        self.token_emb = nn.Embedding(20, dim)
+        self.token_emb = nn.Embedding(30, dim)
         self.layer_pos_emb = Always(None)
 
         self.dropout = nn.Dropout(emb_dropout)
@@ -356,7 +358,7 @@ class TransformerLM_Protein(nn.Module):
                                        reversible, use_scalenorm, use_rezero, ff_dropout, attn_dropout, cross_attend,
                                        auto_check_redraw, qkv_bias, attn_out_bias, no_projection, FAVOR)
         self.norm = nn.LayerNorm(dim)
-        self.to_out = nn.Linear(dim, 20) if not tie_embed else None
+        self.to_out = nn.Linear(dim, 30) if not tie_embed else None
 
     def check_redraw_projections(self):
         self.performer.check_redraw_projections()
@@ -377,3 +379,105 @@ class TransformerLM_Protein(nn.Module):
         x = self.norm(x)
         return self.to_out(x)
 
+    @torch.no_grad()
+    @eval_decorator
+    def generate_proteins(self,
+                          x,
+                          filter_logits_fn='top_k',
+                          filter_thres=0.9,
+                          temperature=1.,
+                          ):
+        if filter_logits_fn == 'top_k':
+            filter_logits_fn = top_k
+        elif filter_logits_fn == 'top_p':
+            filter_logits_fn = top_p
+        else:
+            raise ValueError('filter_logits_fn must be in (top_k, top_p)')
+
+        out = x[:, 0].unsqueeze(-1)    # (B, 1) 첫번째 protein sequence만 제공
+
+        for cur_len in range(self.max_seq_len-1):
+            logits = self(out)[:, -1, :]
+            filtered_logits = filter_logits_fn(logits, thres=filter_thres)
+            probs = F.softmax(filtered_logits / temperature, dim=-1)
+            sample = torch.multinomial(probs, 1)
+
+            out = torch.cat((out, sample), dim=-1)
+        return out
+
+class TransformerLM_OneBillionWords(nn.Module):
+    def __init__(self,
+                 max_seq_len,
+                 dim,
+                 depth,
+                 heads,
+                 dim_head=64,
+                 local_attn_heads=0,
+                 local_window_size=256,
+                 causal=False,
+                 condition_len=0,
+                 ff_mult=4,
+                 nb_features=None,
+                 feature_redraw_interval=1000,
+                 reversible=False,
+                 ff_chunks=1,
+                 ff_glu=False,
+                 emb_dropout=0.,
+                 ff_dropout=0.,
+                 attn_dropout=0.,
+                 generalized_attention=False,
+                 kernel_fn=nn.ReLU(),
+                 use_scalenorm=False,
+                 use_rezero=False,
+                 cross_attend=False,
+                 no_projection=False,
+                 tie_embed=False,
+                 rotary_position_emb=False,
+                 axial_position_emb=False,
+                 axial_position_shape=False,
+                 auto_check_redraw=True,
+                 qkv_bias=False,
+                 attn_out_bias=False,
+                 FAVOR=False,
+                 **kwargs
+                 ):
+        super().__init__()
+        self.max_seq_len = max_seq_len
+        local_attn_heads = cast_tuple(local_attn_heads)
+        self.dim = dim
+
+        # input embedding
+        self.token_emb = nn.Embedding(30522, dim)
+        self.positional_embedding = nn.Embedding(max_seq_len, dim)
+        self.layer_pos_emb = Always(None)
+
+        self.dropout = nn.Dropout(emb_dropout)
+
+        self.transformer = Transformer(dim, depth, heads, local_attn_heads, causal, condition_len, ff_mult, nb_features,
+                                       feature_redraw_interval,
+                                       reversible, use_scalenorm, use_rezero, ff_dropout, attn_dropout, cross_attend,
+                                       auto_check_redraw, qkv_bias, attn_out_bias, no_projection, FAVOR)
+        self.norm = nn.LayerNorm(dim)
+        self.to_out = nn.Linear(dim, 30522) if not tie_embed else None
+
+    def check_redraw_projections(self):
+        self.performer.check_redraw_projections()
+
+    def fix_projection_matrices_(self):
+        self.performer.fix_projection_matrices_()
+
+    def forward(self, x, return_encodings=False, **kwargs):
+        b, n, device = *x.shape, x.device
+
+        x = self.token_emb(x)
+        seq_len = torch.LongTensor([i for i in range(self.max_seq_len)]).cuda()
+        seq_len = self.positional_embedding(seq_len)
+        x = x + seq_len
+        x = self.dropout(x)
+
+        layer_pos_emb = self.layer_pos_emb(x)
+        x = self.transformer(x, pos_emb=layer_pos_emb, **kwargs)
+
+        # norm
+        x = self.norm(x)
+        return self.to_out(x)

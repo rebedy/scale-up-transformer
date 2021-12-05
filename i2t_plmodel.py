@@ -3,8 +3,6 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torch.nn.functional import cross_entropy
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from performer_pytorch import PerformerLM_i2t, PerformerLM_Protein, PerformerLM_OneBillionWords
-from transformer_pytorch.transformer_pytorch import TransformerLM_i2t, TransformerLM_Protein, TransformerLM_OneBillionWords
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
@@ -16,35 +14,67 @@ from cal_metric import get_label_metric_v4
 import os
 import math
 
+from transformer_pytorch.transformer_pytorch import TransformerLM_i2t, TransformerLM_Protein, TransformerLM_OneBillionWords
+from performer_pytorch.performer_pytorch import PerformerLM_i2t, PerformerLM_Protein, PerformerLM_OneBillionWords
 
+
+
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
 class PerformerLightning_i2t(pl.LightningModule):
-    def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, **kargs):
+    def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, save_dir="", **kargs):
         super().__init__()
         self.kargs = kargs
         self.performerLM_i2t = PerformerLM_i2t(**kargs)
         self.weight_decay = weight_decay
         self.lr = lr
-        self.tokenizer = tokenizer
         self.pad_token_idx = pad_token_idx
         self.sos_token_idx = sos_token_idx
         self.eos_token_idx = eos_token_idx
+        self.save_dir = save_dir
         # call this to save hyperparameters to the checkpoint
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['tokenizer'])
+        self.tokenizer = tokenizer
 
     def forward(self, images, texts):
         logit = self.performerLM_i2t(images, texts)
         return logit
 
     def training_step(self, batch, batch_idx): # batch: {'images': tensor[B, img_len * max_img_num], 'texts': tensor[B, max_text_len]}
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats
         images, texts = batch['images'], batch['texts'] 
+        starttime = time.monotonic()
         logit = self(images, texts)    # -> [B, img_len * max_img_num + max_text_len, num_tokens]  # NOTE: num_tokens = text_vocab_size
+        endtime = time.monotonic()
+        # print(f'forward time: {math.log2(endtime-starttime)}')
         condition_len = self.kargs['condition_len']
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
-        self.log('train_loss', loss)
-        return loss
-
+        self.log('train_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
+        # self.log('train_forward', endtime-starttime)
+        torch.cuda.empty_cache()
+        
+        output = {
+            'loss': loss,
+            'time': math.log2(endtime-starttime),
+            'peak_mem': torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024)
+        }
+        return output
+    
+    # def training_epoch_end(self, training_step_outputs):
+    #     gathered_outputs = self.all_gather(training_step_outputs)
+    #     if self.trainer.is_global_zero:
+    #         forward_time = torch.mean(gathered_outputs['time'][0])
+    #         backward_time = torch.mean(gathered_outputs['time'][1])
+    #         peak_mem = torch.mean(max(gathered_outputs['peak_mem']))
+    #         total_train_loss = torch.mean(gathered_outputs['loss'])
+    #         self.log("forward_time", forward_time)
+    #         self.log("backward_time", backward_time)
+    #         self.log("peak_mem", peak_mem)
+    #         self.log("total_train_loss", total_train_loss)
+        
     def validation_step(self, batch, batch_idx):
         img_paths, study_ids, images, texts = batch['img_paths'], batch['study_id'], batch['images'], batch['texts']
         # img_paths, study_ids: list    images: [B, tot_img_len]   texts: [B, max_text_len]
@@ -53,7 +83,7 @@ class PerformerLightning_i2t(pl.LightningModule):
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
-        # self.log('val_loss', loss)
+        self.log('val_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
 
         gen_texts = self.performerLM_i2t.generate_texts(  # gen_texts: tensor[B, <max_text_len]
             images,
@@ -78,7 +108,9 @@ class PerformerLightning_i2t(pl.LightningModule):
         gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
 
         total_val_loss = torch.mean(gathered_validation_step_outputs[0]['val_loss'])
-        self.log('val_loss', total_val_loss)
+        if self.trainer.is_global_zero:
+            self.log("val_loss", total_val_loss)
+        # self.log('val_loss', total_val_loss)
 
         max_text_len = gathered_validation_step_outputs[0]['GT_text'].size(-1)
         total_GT_text = torch.empty(0, max_text_len).type_as(gathered_validation_step_outputs[0]['GT_text'])
@@ -122,11 +154,10 @@ class PerformerLightning_i2t(pl.LightningModule):
             self.log("val_BLEU-3", bleu3)
             self.log("val_BLEU-4", bleu4)
 
-            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
-
+            
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_eval.csv')
-            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_eval.csv')
+            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_eval_'+str(bleu1)+'.csv')
+            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_eval_'+str(bleu1)+'.csv')
             
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -140,6 +171,8 @@ class PerformerLightning_i2t(pl.LightningModule):
             
             f_gt.close()
             f_gen.close()
+            print("GEN_reports_eval saved.")
+            # time.sleep(0.5)
 
             """
             # run labeler
@@ -148,9 +181,9 @@ class PerformerLightning_i2t(pl.LightningModule):
             LABELED_GEN_REPORTS_PATH = os.path.join(dirpath, 'labeled_GEN_reports_temp.csv')
             subprocess.run(
                 f'source ~/anaconda3/bin/activate chexpert-label \
-                && cd /home/jylee/ScaleUp/scaleup/chexpert-labeler \
-                && export PYTHONPATH=/home/jylee/ScaleUp/scaleup/chexpert-labeler/NegBio:$PYTHONPATH \
-                && python /home/jylee/ScaleUp/scaleup/chexpert-labeler/label.py \
+                && cd /home/dylee/__workspace/scale-up-transformer/chexpert-labeler \
+                && export PYTHONPATH=/home/dylee/__workspace/scale-up-transformer/chexpert-labelerNegBio:$PYTHONPATH \
+                && python /home/dylee/__workspace/scale-up-transformer/chexpert-labeler/label.py \
                 --reports_path {os.path.abspath(GT_REPORTS_PATH)} \
                 --output_path {os.path.abspath(LABELED_GT_REPORTS_PATH)}', 
                 shell=True,
@@ -258,11 +291,9 @@ class PerformerLightning_i2t(pl.LightningModule):
             self.log("test_BLEU-3", bleu3)
             self.log("test_BLEU-4", bleu4)
 
-            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
-
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_test.csv')
-            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_test.csv')
+            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_test.csv')
+            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_test.csv')
             
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -357,9 +388,18 @@ class PerformerLightning_i2t(pl.LightningModule):
             verbose=True,
             )
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
+        # return {"optimizer": optimizer, "monitor": "val_loss"}
         # TODO: 추후 scheduler 변경도 고려해보기
 
 
+
+
+
+
+
+
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
 class PerformerLightning_protein(pl.LightningModule):
     def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, **kargs):
         super().__init__()

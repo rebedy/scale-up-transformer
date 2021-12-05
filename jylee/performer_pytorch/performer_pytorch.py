@@ -188,13 +188,13 @@ def causal_linear_attention_noncuda(q, k, v, chunk_size = 128, eps = 1e-6): # q,
         context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
         out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
 
-        last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요.
-        last_context_cumsum = context_cumsum[:, :, -1:]  # [B, global_head, 1, nb_features ,dim_head]  # 이건 다음 for문(다음 chunk)에서 context_cumsum를 구하기 위해 필요.
+        last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요. 마지막것만 가져와도 이미 cumsum을 한 상태이기 때문에 괜찮다.
+        last_context_cumsum = context_cumsum[:, :, -1:]  # [B, global_head, 1, nb_features ,dim_head]  # 이건 다음 for문(다음 chunk)에서 context_cumsum를 구하기 위해 필요. 마지막것만 가져와도 이미 cumsum을 한 상태이기 때문에 괜찮다.
         outs.append(out)
 
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
-def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size = 128, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size = 512, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
     condition_q = q[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_k = k[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_v = v[:, :, :condition_len]  # [B, global_head, condition_len, dim_head]
@@ -262,7 +262,7 @@ class FastAttention(nn.Module):
             q = q.softmax(dim = -1)
             k = torch.exp(k) if self.causal else k.softmax(dim = -2)
 
-        elif self.generalized_attention: # 이 부분은 무시
+        elif self.generalized_attention:
             create_kernel = partial(generalized_kernel, kernel_fn = self.kernel_fn, projection_matrix = self.projection_matrix, device = device)
             q, k = map(create_kernel, (q, k))
 
@@ -551,7 +551,7 @@ class Performer(nn.Module):
             if not cross_attend:
                 continue
 
-            # 우리는 cross attention을 사용하지 않는다.
+            # Performer_enc_dec 에서 사용되는 cross attention
             layers.append(nn.ModuleList([
                 wrapper_fn(CrossAttention(dim, heads = heads, dim_head = dim_head, nb_features = nb_features, generalized_attention = generalized_attention, kernel_fn = kernel_fn, dropout = attn_dropout, no_projection = no_projection, qkv_bias = qkv_bias, attn_out_bias = attn_out_bias)),
                 wrapper_fn(Chunk(ff_chunks, FeedForward(dim, mult = ff_mult, dropout = ff_dropout, glu = ff_glu), along_dim = 1))
@@ -864,7 +864,7 @@ class PerformerLM_Protein(nn.Module):
                  local_window_size=256,
                  causal=False,
                  condition_len=0,
-                 ff_mult=4,
+                 ff_mult=1,
                  nb_features=None,
                  feature_redraw_interval = 1000,
                  reversible=False,
@@ -893,7 +893,7 @@ class PerformerLM_Protein(nn.Module):
         self.dim = dim
 
         # input embedding
-        self.token_emb = nn.Embedding(20, dim)
+        self.token_emb = nn.Embedding(30, dim)
         self.layer_pos_emb = Always(None)
 
         self.dropout = nn.Dropout(emb_dropout)
@@ -902,7 +902,7 @@ class PerformerLM_Protein(nn.Module):
                                    nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero,
                                    ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
         self.norm = nn.LayerNorm(dim)
-        self.to_out = nn.Linear(dim, 20) if not tie_embed else None
+        self.to_out = nn.Linear(dim, 30) if not tie_embed else None
 
     def check_redraw_projections(self):
         self.performer.check_redraw_projections()
@@ -926,4 +926,115 @@ class PerformerLM_Protein(nn.Module):
         x = self.norm(x)
 
         return self.to_out(x)   # [B, seq_len, num_tokens]
+
+    @torch.no_grad()
+    @eval_decorator
+    def generate_proteins(self,
+                          x,
+                          filter_logits_fn = 'top_k',
+                          filter_thres = 0.9,
+                          temperature = 1.
+                          ):
+        if filter_logits_fn == 'top_k':
+            filter_logits_fn = top_k
+        elif filter_logits_fn == 'top_p':
+            filter_logits_fn = top_p
+        else:
+            raise ValueError('filter_logits_fn must be in (top_k, top_p)')
+
+
+        out = x[:, 0].unsqueeze(-1)   # (B, 1)  첫번째 protein sequence만 제공
+
+        for cur_len in range(self.max_seq_len-1):
+            logits = self(out)[:, -1, :]  # -> [B, num_text_token]
+            filtered_logits = filter_logits_fn(logits, thres=filter_thres)
+            probs = F.softmax(filtered_logits / temperature, dim=-1)  # [B, num_text_tokens]
+            sample = torch.multinomial(probs, 1)  # [B, 1]
+
+            out = torch.cat((out, sample), dim=-1)
+
+        return out
+
+
+## OneBillionWordsPerformer
+class PerformerLM_OneBillionWords(nn.Module):
+    def __init__(self,
+                 max_seq_len,
+                 dim,
+                 depth,
+                 heads,
+                 dim_head=64,
+                 local_attn_heads=0,
+                 local_window_size=256,
+                 causal=False,
+                 condition_len=0,
+                 ff_mult=4,
+                 nb_features=None,
+                 feature_redraw_interval=1000,
+                 reversible=False,
+                 ff_chunks=1,
+                 ff_glu = False,
+                 emb_dropout = 0.,
+                 ff_dropout = 0.,
+                 attn_dropout = 0.,
+                 generalized_attention = False,
+                 kernel_fn = nn.ReLU(),
+                 use_scalenorm = False,
+                 use_rezero = False,
+                 cross_attend = False,
+                 no_projection = False,
+                 tie_embed = False,
+                 rotary_position_emb = False,
+                 axial_position_emb = False,
+                 axial_position_shape = False,
+                 auto_check_redraw = True,
+                 qkv_bias = False,
+                 attn_out_bias = False,
+                 ):
+        super().__init__()
+        self.max_seq_len = max_seq_len
+        local_attn_heads = cast_tuple(local_attn_heads)
+        self.dim = dim
+
+        # input embedding
+        self.token_emb = nn.Embedding(30522, dim)
+        self.positional_embedding = nn.Embedding(max_seq_len, dim)
+        self.layer_pos_emb = Always(None)
+
+        self.dropout = nn.Dropout(emb_dropout)
+
+        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult,
+                                   nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero,
+                                   ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
+        self.norm = nn.LayerNorm(dim)
+        self.to_out = nn.Linear(dim, 30522) if not tie_embed else None
+
+    def check_redraw_projections(self):
+        self.performer.check_redraw_projections()
+
+    def fix_projection_matrices_(self):
+        self.performer.fix_projection_matrices_()
+
+    def forward(self, x, return_encodings = False, **kwargs):
+        b, n, device = *x.shape, x.device   # b: batch_size, n: x의 seq_len
+        assert n <= self.max_seq_len, f'sequence length {n} must be less than the max sequence length {self.max_seq_len}'
+
+        # token embedding
+        x = self.token_emb(x)  # [B, seq_len] -> [B, seq_len, dim]
+        # positional embedding
+        seq_len = torch.LongTensor([i for i in range(self.max_seq_len)]).cuda()
+        seq_len = self.positional_embedding(seq_len)
+        x = x + seq_len
+
+        x = self.dropout(x)    # [B, seq_len, dim]
+
+        # Performer layers
+        layer_pos_emb = self.layer_pos_emb(x)
+        x = self.performer(x, pos_emb = layer_pos_emb, **kwargs)
+
+        # norm
+        x = self.norm(x)
+
+        return self.to_out(x)   # [B, seq_len, num_tokens]
+
 
