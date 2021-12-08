@@ -43,20 +43,11 @@ class CXRDataset(Dataset):
         self.img_root_dir = img_root_dir
         self.text_root_dir = text_root_dir
         
-        # self.vae = VQGanVAE(vqgan_model_path, vqgan_config_path)
-        # self.img_fmap_size = self.vae.fmap_size
-        # print(f'img_fmap_size: {self.img_fmap_size}')
-        # self.img_reso = self.vae.image_size        # eg. 256 or 384 in my case
-        # print(f'img_reso: {self.img_reso}')
-        # self.img_len = int((self.img_reso / self.vae.f)**2)  # eg. 16**2 = 256
-        # print(f'img_len: {self.img_len}')
-        # self.img_vocab_size = self.vae.num_tokens  # eg. 1024
-        # print(f'img_vocab_size: {self.img_vocab_size}')
-
-        self.img_fmap_size = 16
-        self.img_reso = 256        # eg. 256 or 384 in my case
-        self.img_len = 256  # eg. 16**2 = 256
-        self.img_vocab_size = 1024  # eg. 1024
+        self.vae = VQGanVAE(vqgan_model_path, vqgan_config_path)
+        self.img_fmap_size = self.vae.fmap_size
+        self.img_reso = self.vae.image_size        # eg. 256 or 384 in my case
+        self.img_len = int((self.img_reso / self.vae.f)**2)  # eg. 16**2 = 256
+        self.img_vocab_size = self.vae.num_tokens  # eg. 1024
 
 
         with open(codebook_indices_path, 'rb') as f:

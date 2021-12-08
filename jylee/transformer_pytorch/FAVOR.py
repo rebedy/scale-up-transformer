@@ -66,8 +66,24 @@ def softmax_kernel(data, *, projection_matrix, is_query, normalized_data=True, e
     return data_dash.type_as(data)
 
 
+def generalized_kernel(data, *, projection_matrix, kernel_fn=nn.ReLU(), kernel_epsilon=0.001, normalize_data=True, device=None):
+    b, h, *_ = data.shape
 
-def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size=128, eps=1e-6):
+    data_normalizer = (data.shape[-1] ** -0.25) if normalize_data else 1.
+
+    if projection_matrix is None:
+        return kernel_fn(data_normalizer * data) + kernel_epsilon
+
+    projection = repeat(projection_matrix, 'j d -> b h j d', b=b, h=h)
+    projection = projection.type_as(data)
+
+    data_dash = torch.einsum('...id, ...jd -> ...ij', (data_normalizer * data), projection)
+
+    data_prime = kernel_fn(data_dash) + kernel_epsilon
+    return data_prime.type_as(data)
+
+
+def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size=32, eps=1e-6):
     """
     q, k : [B, global_head, seq_len, nb_features]
     v : [B, global_head, seq_len, dim_head]
@@ -130,6 +146,8 @@ class FastAttention(nn.Module):
             ortho_scaling = 0,
             causal = False,
             condition_len = 0,
+            generalized_attention=False,
+            kernel_fn=nn.ReLU(),
             no_projection = False
     ):
         super().__init__()
@@ -142,6 +160,9 @@ class FastAttention(nn.Module):
         self.create_projection = partial(gaussian_orthogonal_random_matrix, nb_rows = self.nb_features, nb_columns = dim_head, scaling=ortho_scaling)
         projection_matrix = self.create_projection() # [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal. ortho_scaling=0이면 가우시안에서 임의로 [nb_features, dim_heads]을 만들고 norm(dim=1)한 값인 [nb_features]를 row별로 곱한다.
         self.register_buffer('projection_matrix', projection_matrix)
+
+        self.generalized_attention = generalized_attention
+        self.kernel_fn = kernel_fn
 
         self.no_projection = no_projection
 
@@ -162,6 +183,10 @@ class FastAttention(nn.Module):
             q = q.softmax(dim=-1)
             k = torch.exp(k) if self.causal else k.softmax(dim=-2)
 
+        elif self.generalized_attention:
+            create_kernel = partial(generalized_kernel, kernel_fn=self.kernel_fn, projection_matrix=self.projection_matrix, device=device)
+            q, k = map(create_kernel, (q, k))
+
         else:
             create_kernel = partial(softmax_kernel, projection_matrix = self.projection_matrix, device=device)
             q = create_kernel(q, is_query=True)  # -> [B, global_head, seq_len, nb_features] 즉, q의 random feature vector를 얻었다
@@ -181,6 +206,8 @@ class FAVORAttention(nn.Module):
             heads = 8,
             local_heads = 0,
             nb_features = None,
+            generalized_attention=False,
+            kernel_fn=nn.ReLU(),
             dropout = 0.3,
             no_projection = False,
             qkv_bias = False,
@@ -195,7 +222,7 @@ class FAVORAttention(nn.Module):
         self.dim_head = dim_head
 
         # Fast Attention
-        self.fast_attention = FastAttention(dim_head, nb_features, causal=causal, condition_len=condition_len, no_projection=no_projection)
+        self.fast_attention = FastAttention(dim_head, nb_features, causal=causal, condition_len=condition_len, generalized_attention=generalized_attention, kernel_fn=kernel_fn, no_projection=no_projection)
 
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_k = nn.Linear(dim, dim, bias=qkv_bias)

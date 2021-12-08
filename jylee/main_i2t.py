@@ -10,8 +10,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
-from tokenizers.processors import \
-    BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
+from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
 from loader import CXRDataset
 from datamodule import CXRDataModule
 from plmodel import PerformerLightning_i2t, TransformerLightning_i2t
@@ -30,9 +29,9 @@ if __name__ == '__main__':
     parser.add_argument('--test_meta_file', default='metadata/mdvl_mimiccxr_test.csv', type=str)
     parser.add_argument('--img_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/files', type=str)
     parser.add_argument('--text_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports_mdvl', type=str)
-    parser.add_argument('--vqgan_model_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt', type=str)
-    parser.add_argument('--vqgan_config_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml', type=str)
-    parser.add_argument('--codebook_indices_path', default='/home/edlab/wcshin/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle', type=str)
+    parser.add_argument('--vqgan_model_path', default='/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/checkpoints/last.ckpt', type=str)
+    parser.add_argument('--vqgan_config_path', default='/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/configs/2021-10-23T11-14-46-project.yaml', type=str)
+    parser.add_argument('--codebook_indices_path', default='/home/edlab/jylee/Scaleup/data/mimiccxr_vqgan1024_res512_codebook_indices.pickle', type=str)
     parser.add_argument('--max_img_num', default=1, type=int, help='must be less than or equal to target_count')
     parser.add_argument('--max_text_len', default=256, type=int)
     parser.add_argument('--vocab_file', default='BBPE_tokenizer/vocab.json', type=str)
@@ -43,8 +42,9 @@ if __name__ == '__main__':
 
     # training args
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
+    parser.add_argument('--sav_dir', type=str)
     parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--batch_size', default=16, type=int)
+    parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
     parser.add_argument('--weight_decay', default=0.01, type=float, help='weight decay')
@@ -68,7 +68,7 @@ if __name__ == '__main__':
     parser.add_argument('--reversible', default=False, type=str2bool,
                         help='reversible layers, from Reformer paper. Works only when sharded_ddp=True')
     parser.add_argument('--ff_chunks', default=10, type=int, help='chunk feedforward layer, from Reformer paper')
-    parser.add_argument('--ff_glu', default=True, type=str2bool, help='use GLU variant for feedforward')
+    parser.add_argument('--ff_glu', default=False, type=str2bool, help='use GLU variant for feedforward')
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
@@ -174,6 +174,7 @@ if __name__ == '__main__':
             pad_token_idx=tokenizer.token_to_id("[PAD]"),
             sos_token_idx=tokenizer.token_to_id("[SOS]"),
             eos_token_idx=tokenizer.token_to_id("[EOS]"),
+            sav_dir=args.sav_dir,
             **kargs_performerLM_i2t,
         )
     else:
@@ -184,15 +185,16 @@ if __name__ == '__main__':
             pad_token_idx=tokenizer.token_to_id("[PAD]"),
             sos_token_idx=tokenizer.token_to_id("[SOS]"),
             eos_token_idx=tokenizer.token_to_id("[EOS]"),
+            sav_dir=args.sav_dir,
             **kargs_performerLM_i2t,
         )
 
     # callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join('/home/edlab/jylee/Scaleup/output/Performer', '{epoch:06}--{val_loss:.2f}'),
+        dirpath=f'/home/edlab/jylee/Scaleup/output/{args.sav_dir}',
         verbose=True,
         save_last=True,
-        # filename="{epoch:06}",
+        filename="{epoch:06}--{val_loss:.2f}",
         save_top_k=args.save_top_k,
         monitor='val_loss',
         mode='min',
@@ -219,16 +221,13 @@ if __name__ == '__main__':
     ## TODO: 이중에서 나는 뭘 하면 되는 거지?
 
     if (args.fp16 == True and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded',
-                             gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded', gradient_clip_val=0.5)
     elif (args.fp16 == True and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16,
-                             plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
     elif (args.fp16 == False and args.sharded_ddp == True):
         trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins='ddp_sharded', gradient_clip_val=0.5)
     elif (args.fp16 == False and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins=DDPPlugin(find_unused_parameters=False),
-                             gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
 
     # log gradients and model topology
     # wandb_logger.watch(model)

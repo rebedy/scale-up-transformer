@@ -35,7 +35,7 @@ class OneBillionWordsDataset(Dataset):
     def load_dataset(self, train_type):
         data = list()
         if train_type == 'train':
-            PATH = '/home/edlab/jylee/Scaleup/data/1-billion-word-language-modeling-benchmark-r13output/training-monolingual.tokenized.shuffled'
+            PATH = './training-monolingual.tokenized.shuffled'
             file_list = os.listdir(PATH)
 
             for file in file_list:
@@ -44,7 +44,7 @@ class OneBillionWordsDataset(Dataset):
                     data.extend(temp_data)
 
         else:   # valid or test
-            PATH = '/home/edlab/jylee/Scaleup/data/1-billion-word-language-modeling-benchmark-r13output/heldout-monolingual.tokenized.shuffled'
+            PATH = './heldout-monolingual.tokenized.shuffled'
             file_list = sorted(os.listdir(PATH))
 
             if train_type == 'valid':

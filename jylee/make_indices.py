@@ -2,10 +2,10 @@ import os
 import pdb
 from vae import VQGanVAE
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
-VQGAN_MODEL_PATH = '/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/checkpoints/last.ckpt'
-VQGAN_CONFIG_PATH = '/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/configs/2021-10-23T11-14-46-project.yaml'
+VQGAN_MODEL_PATH = '/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024_reso384/checkpoints/last.ckpt'
+VQGAN_CONFIG_PATH = '/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024_reso384/configs/2021-07-10T14-41-00-project.yaml'
 
 vae = VQGanVAE(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH).cuda()
 
@@ -52,5 +52,5 @@ for path in tqdm(img_paths):
     indices_list = encoded.squeeze().cpu().detach().tolist()
     dict_by_dicomid[dicom_id] = indices_list
 
-with open('mimiccxr_vqgan1024_res512_codebook_indices.pickle', 'wb') as f:
+with open('/home/edlab/jylee/Scaleup/data/mimiccxr_vqgan1024_res384_codebook_indices.pickle', 'wb') as f:
     pickle.dump(dict_by_dicomid, f)

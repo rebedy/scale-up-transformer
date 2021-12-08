@@ -25,7 +25,7 @@ from utils import str2bool
 if __name__ == '__main__':
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
     parser = argparse.ArgumentParser()
     # dataset args
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     parser.add_argument('--reversible', default=False, type=str2bool,
                         help='reversible layers, from Reformer paper. Works only when sharded_ddp=True')
     parser.add_argument('--ff_chunks', default=1, type=int, help='chunk feedforward layer, from Reformer paper')
-    parser.add_argument('--ff_glu', default=False, type=str2bool, help='use GLU variant for feedforward')
+    parser.add_argument('--ff_glu', default=True, type=str2bool, help='use GLU variant for feedforward')
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
