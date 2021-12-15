@@ -52,10 +52,12 @@ class Transformer(nn.Module):
             local_attn_heads = 0,
             causal = True,
             condition_len = 0,
+            attn_type="conditioned_noncuda",
+            generalized_attention=False,
+            kernel_fn = nn.ReLU(),
             ff_mult = 4,
             nb_features = None,
             feature_redraw_interval = 1000,
-            reversible = False,
             use_scalenorm = False,
             use_rezero = False,
             ff_dropout = 0.,
@@ -85,8 +87,12 @@ class Transformer(nn.Module):
             for _, local_heads in zip(range(depth), local_attn_heads):
                 # Self-Attention + Feed Forward 합치는 부분
                 layers.append(nn.ModuleList([
-                    wrapper_fn(FAVORAttention(dim = dim, causal=causal, condition_len=condition_len, heads=heads,
-                                    local_heads=local_heads, nb_features=nb_features, dropout=attn_dropout, no_projection=no_projection, qkv_bias=qkv_bias, attn_out_bias=attn_out_bias)),
+                    wrapper_fn(FAVORAttention(dim = dim, causal=causal, condition_len=condition_len, attn_type=attn_type, 
+                                              generalized_attention=generalized_attention,
+                                              kernel_fn = kernel_fn,
+                                              heads=heads, local_heads=local_heads, nb_features=nb_features, 
+                                              dropout=attn_dropout, no_projection=no_projection, 
+                                              qkv_bias=qkv_bias, attn_out_bias=attn_out_bias)),
                     wrapper_fn(PositionWiseFeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout, activation=None))
                 ]))
 
@@ -143,6 +149,9 @@ class TransformerLM_i2t(nn.Module):
             local_attn_heads=0,
             causal = True,
             condition_len = 0,
+            attn_type="conditioned_noncuda",
+            generalized_attention=False,
+            kernel_fn = nn.ReLU(),
             ff_mult=4,
             nb_features = None,
             feature_redraw_interval = 1000,
@@ -194,8 +203,10 @@ class TransformerLM_i2t(nn.Module):
 
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.transformer = Transformer(dim, depth, heads, local_attn_heads, causal, condition_len, ff_mult, nb_features, feature_redraw_interval,
-                                       reversible, use_scalenorm, use_rezero, ff_dropout, attn_dropout, cross_attend, auto_check_redraw, qkv_bias, attn_out_bias, no_projection, FAVOR)
+        self.transformer = Transformer(dim, depth, heads, local_attn_heads, causal, condition_len, attn_type, generalized_attention, kernel_fn,
+                                       ff_mult, nb_features, feature_redraw_interval, use_scalenorm, use_rezero, 
+                                       ff_dropout, attn_dropout, cross_attend, auto_check_redraw, 
+                                       qkv_bias, attn_out_bias, no_projection, FAVOR)
 
         self.norm = nn.LayerNorm(dim)
         self.to_out = nn.Linear(dim, num_tokens) # if not tie_embed else None
