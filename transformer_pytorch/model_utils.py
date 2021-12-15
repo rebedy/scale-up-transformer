@@ -2,8 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
+from contextlib import contextmanager
 
 
+@contextmanager
+def null_context():
+    yield
+    
 def exists(val):
     return val is not None
 
