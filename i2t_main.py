@@ -20,9 +20,17 @@ from loader import CXRDataset
 from datamodule import CXRDataModule
 
 """
-CUDA_VISIBLE_DEVICES=0,1 python3 i2t_main.py --FAVOR
+CUDA_VISIBLE_DEVICES=2,3 python3 i2t_main.py --transformer
+
+CUDA_VISIBLE_DEVICES=0,1 python3 i2t_main.py --transformer --FAVOR
+CUDA_VISIBLE_DEVICES=2,3 python3 i2t_main.py --transformer --FAVOR --generalized_attention
+
 CUDA_VISIBLE_DEVICES=4,5 python3 i2t_main.py --FAVOR
 CUDA_VISIBLE_DEVICES=6,7 python3 i2t_main.py --FAVOR --generalized_attention
+
+
+CUDA_VISIBLE_DEVICES=0,1 python3 i2t_main.py --transformer --FAVOR
+
 """
 if __name__ == '__main__':
 
@@ -31,19 +39,19 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # dataset args
-    parser.add_argument('--train_meta_file', default='metadata/mdvl_mimiccxr_train.csv', type=str)
-    parser.add_argument('--val_meta_file', default='metadata/mdvl_mimiccxr_valid.csv', type=str)
-    parser.add_argument('--test_meta_file', default='metadata/mdvl_mimiccxr_test.csv', type=str)
+    parser.add_argument('--train_meta_file', default='metadata/mimiccxr_train_sub_with_count.csv', type=str)
+    parser.add_argument('--val_meta_file', default='metadata/mimiccxr_validate_sub_with_count.csv', type=str)
+    parser.add_argument('--test_meta_file', default='metadata/mimiccxr_test_sub_with_count.csv', type=str)
     parser.add_argument('--img_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/files', type=str)
-    parser.add_argument('--text_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports_mdvl', type=str)
+    parser.add_argument('--text_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports', type=str)
     parser.add_argument('--vqgan_model_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt', type=str)
     parser.add_argument('--vqgan_config_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml', type=str)
     parser.add_argument('--codebook_indices_path', default='/home/edlab/wcshin/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle', type=str)
-    parser.add_argument('--max_img_num', default=1, type=int, help='must be less than or equal to target_count')
+    parser.add_argument('--max_img_num', default=2, type=int, help='must be less than or equal to target_count')
     parser.add_argument('--max_text_len', default=256, type=int)
     parser.add_argument('--vocab_file', default='BBPE_tokenizer/vocab.json', type=str)
     parser.add_argument('--merge_file', default='BBPE_tokenizer/merges.txt', type=str)
-    parser.add_argument('--target_count', default=1, type=int)
+    parser.add_argument('--target_count', default=2, type=int)
     parser.add_argument('--target_view', default=['AP', 'AP AXIAL', 'PA', 'LATERAL', 'LL', ''], nargs='+', type=str)
     parser.add_argument('--use_first_img', default=False, type=str2bool)
 
@@ -51,9 +59,10 @@ if __name__ == '__main__':
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
     parser.add_argument('--seed', default=42, type=int)
     #!#
-    parser.add_argument('--batch_size', default=16, type=int)
+    parser.add_argument('--batch_size', default=12, type=int)
     parser.add_argument('--n_gpus', default=2, type=int)
-    parser.add_argument('--num_sanity_val_steps', default=1, type=int)
+    parser.add_argument('--num_sanity_val_steps', default=0, type=int)
+    parser.add_argument('--gradient_clip_val', default=5, type=float)
     #!#
     parser.add_argument('--n_epochs', default=1000, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
@@ -77,11 +86,10 @@ if __name__ == '__main__':
     parser.add_argument('--reversible', default=False, type=str2bool,
                         help='reversible layers, from Reformer paper. Works only when sharded_ddp=True')
     parser.add_argument('--ff_chunks', default=1, type=int, help='chunk feedforward layer, from Reformer paper')
-    parser.add_argument('--ff_glu', default=True, type=str2bool, help='use GLU variant for feedforward')   #!!!!!#
+    parser.add_argument('--ff_glu', default=False, type=str2bool, help='use GLU variant for feedforward')   #!!!!!#
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
-    parser.add_argument('--generalized_attention', action='store_true', help='defaults to softmax approximation, but can be set to True for generalized attention')
     parser.add_argument('--use_scalenorm', default=False, type=str2bool,
                         help='use scale norm, from Transformers without Tears paper')
     parser.add_argument('--use_rezero', default=False, type=str2bool,
@@ -90,6 +98,10 @@ if __name__ == '__main__':
                         help='multiply final embeddings with token weights for logits')
     parser.add_argument('--rotary_position_emb', default=False, type=str2bool,
                         help='use rotary positional embedding, which endows linear attention with relative positional encoding with no learned parameters. should always be turned on unless if you want to go back to old absolute positional encoding')
+    
+    parser.add_argument('--generalized_attention', action='store_true', help='defaults to softmax approximation, but can be set to True for generalized attention')
+    parser.add_argument('--attn_type', default='conditioned_cuda', 
+                        choices=['noncuda', 'cuda', 'conditioned_noncuda', 'conditioned_cuda'], type=str)
     parser.add_argument('--transformer', action='store_true')
     parser.add_argument('--FAVOR', action='store_true')
 
@@ -146,6 +158,7 @@ if __name__ == '__main__':
     args.max_img_num = train_ds.max_img_num
     args.condition_len = train_ds.img_len * train_ds.max_img_num
     args.img_fmap_size = int(train_ds.img_fmap_size)
+    print("\ncondition_len ", args.condition_len)
     
     kargs_performerLM_i2t = {
         'num_tokens': args.num_tokens,
@@ -160,6 +173,7 @@ if __name__ == '__main__':
         'local_window_size': args.local_window_size,
         'causal': args.causal,
         'condition_len': args.condition_len,  # if greater than 0 and causal=True, conditoned causal LM works.
+        'attn_type': args.attn_type,
         'nb_features': args.nb_features,
         'feature_redraw_interval': args.feature_redraw_interval,
         'reversible': args.reversible,
@@ -175,12 +189,19 @@ if __name__ == '__main__':
         'tie_embed': args.tie_embed,
         'rotary_position_emb': args.rotary_position_emb,
         'img_fmap_size': args.img_fmap_size,
-        # 'FAVOR':args.FAVOR,
+        'FAVOR':args.FAVOR,
     }
-    if args.generalized_attention:
-        save_dirs = "/home/edlab/dylee/scaleup_transformer/i2t_Performers/sut_i2t_gen_"+TODAY+NOW
+    if args.transformer:
+        if args.generalized_attention:
+            save_dirs = "/home/edlab/dylee/scaleup_transformer/i2t_Performers/sut_i2t_"+str(args.max_img_num)+"of2_"+TODAY+NOW+"_trans_gen"
+        else:
+            save_dirs = "/home/edlab/dylee/scaleup_transformer/i2t_Performers/sut_i2t_"+str(args.max_img_num)+"of2_"+TODAY+NOW+"_trans_fav"
     else:
-        save_dirs = "/home/edlab/dylee/scaleup_transformer/i2t_Performers/sut_i2t_fav_"+TODAY+NOW
+        if args.generalized_attention:
+            save_dirs = "/home/edlab/dylee/scaleup_transformer/i2t_Performers/sut_i2t_"+str(args.max_img_num)+"of2_"+TODAY+NOW+"_perf_gen"
+        else:
+            save_dirs = "/home/edlab/dylee/scaleup_transformer/i2t_Performers/sut_i2t_"+str(args.max_img_num)+"of2_"+TODAY+NOW+"_perf_fav"
+        
     os.makedirs(save_dirs, exist_ok=True)
         
     if not args.transformer:
@@ -225,7 +246,7 @@ if __name__ == '__main__':
     patience=10,
     verbose=True,
     mode='max'
-)
+    )
     # profiler = AdvancedProfiler()
     
     trainer_args = {
@@ -242,18 +263,22 @@ if __name__ == '__main__':
     # instrument experiment with W&B
 
     wandb_logger = WandbLogger(entity='scaleup', project='i2t_Performer__'+TODAY, log_model=True, config=args)
+    
     if (args.fp16 == True and args.sharded_ddp == True):
         trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded',
-                            gradient_clip_val=0.5)
+                            gradient_clip_val=args.gradient_clip_val)
+    
     elif (args.fp16 == True and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16,
-                            plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins=DDPPlugin(find_unused_parameters=False), 
+                             gradient_clip_val=args.gradient_clip_val)
+    
     elif (args.fp16 == False and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins='ddp_sharded', gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins='ddp_sharded', 
+                             gradient_clip_val=args.gradient_clip_val)
         
     elif (args.fp16 == False and args.sharded_ddp == False):
         trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins=DDPPlugin(find_unused_parameters=False), 
-                            gradient_clip_val=0.5, accumulate_grad_batches=16)
+                            gradient_clip_val=args.gradient_clip_val, accumulate_grad_batches=16)
         # trainer = pl.Trainer(**trainer_args,
         #                      logger=wandb_logger,
         #                      checkpoint_callback=checkpoint_callback,

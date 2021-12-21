@@ -9,7 +9,7 @@ from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
-from protein_loader import TremblDataset
+from loader_protein import TremblDataset
 from datamodule import CXRDataModule, ProteinDataModule
 from plmodel import PerformerLightning_i2t, TransformerLightning_i2t, PerformerLightning_protein, TransformerLightning_protein
 from pytorch_lightning.plugins import DDPPlugin

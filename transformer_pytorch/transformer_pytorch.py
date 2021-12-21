@@ -43,6 +43,7 @@ class PositionWiseFeedForward(nn.Module):
         return out
 
 
+
 class Transformer(nn.Module):
     def __init__(
             self,
@@ -133,6 +134,7 @@ class Transformer(nn.Module):
         if self.auto_check_redraw:  # auto_check_redraw = True
             self.proj_updater.redraw_projections()  # calls_since_last_redraw가 interval을 넘어가면 redraw  ## TODO: 얘가 뭐지?
         return self.net(x, **kwargs)  # -> [B, seq_len, dim]
+
 
 
 class TransformerLM_i2t(nn.Module):

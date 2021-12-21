@@ -13,7 +13,7 @@ from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
-from protein_loader import ProteinDataset
+from loader_protein import ProteinDataset
 from datamodule import CXRDataModule, ProteinDataModule
 from plmodel import PerformerLightning_i2t, TransformerLightning_i2t, PerformerLightning_protein, TransformerLightning_protein
 from performer_pytorch import PerformerLM_i2t, PerformerLM_Protein
@@ -55,7 +55,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_epochs', default=1000, type=int)
     parser.add_argument('--n_gpus', default=1, type=int)
     parser.add_argument('--save_top_k', default=5, type=int)
-    parser.add_argument('--fp16', default=False, type=str2bool, help='FP16')
+    parser.add_argument('--fp16', default=True, type=str2bool, help='FP16')
     parser.add_argument('--sharded_ddp', default=False, type=str2bool, help='fairscale sharded ddp')
 
     # model args

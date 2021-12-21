@@ -1,6 +1,5 @@
 import os
 from torch.utils.data import Dataset
-from torch.autograd import Variable
 import torch
 from PIL import Image
 import numpy as np
@@ -8,8 +7,6 @@ import csv
 import pickle
 from collections import defaultdict
 from tqdm import tqdm
-from tokenizers import ByteLevelBPETokenizer
-from tokenizers.processors import BertProcessing # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
 import albumentations
 import albumentations.pytorch
 from vae import VQGanVAE
@@ -27,46 +24,48 @@ class CXRDataset(Dataset):
                 codebook_indices_path,
                 max_img_num,   # eg. 4
                 max_text_len,  # eg. 512
-                vocab_file,
-                merge_file,
-                target_count,
+                tokenizer,
+                target_count,  # number of images
+                target_view,   # list
+                use_first_img, # True or False
                 ):
         super().__init__()
         self.dict_by_studyid = defaultdict(list)
         f = open(metadata_file, 'r')
         rdr = csv.reader(f)
-        for i, line in enumerate(tqdm(rdr)):
+        for i, line in tqdm(enumerate(rdr)):
             dicom_id, subject_id, study_id, ViewPosition, count = line
-            if int(count) == int(target_count):
+            if (int(count) == int(target_count) and ViewPosition in target_view):
                 self.dict_by_studyid[study_id].append(line)  # {study_id: [[dicom_id, subject_id, study_id, ViewPosition, count],[...],...]}
-        self.key_list = list(self.dict_by_studyid.keys())
+        self.key_list = list(self.dict_by_studyid.keys())#[:5]
         print("number of target subject:", len(self.key_list))
         
         self.img_root_dir = img_root_dir
         self.text_root_dir = text_root_dir
         
-        self.vae = VQGanVAE(vqgan_model_path, vqgan_config_path)
-        self.img_fmap_size = self.vae.f
-        self.img_reso = self.vae.image_size        # eg. 256 or 384 in my case       
-        self.img_len = int((self.img_reso / self.img_fmap_size)**2)  # eg. 16**2 = 256
-        self.img_vocab_size = self.vae.num_tokens  # eg. 1024
-        
+        # self.vae = VQGanVAE(vqgan_model_path, vqgan_config_path)
+        # self.img_fmap_size = self.vae.fmap_size
+        # print(f'img_fmap_size: {self.img_fmap_size}')
+        # self.img_reso = self.vae.image_size        # eg. 256 or 384 in my case
+        # print(f'img_reso: {self.img_reso}')
+        # self.img_len = int((self.img_reso / self.vae.f)**2)  # eg. 16**2 = 256
+        # print(f'img_len: {self.img_len}')
+        # self.img_vocab_size = self.vae.num_tokens  # eg. 1024
+        # print(f'img_vocab_size: {self.img_vocab_size}')
+
+        self.img_fmap_size = 16
+        self.img_reso = 256        # eg. 256 or 384 in my case
+        self.img_len = 256  # eg. 16**2 = 256
+        self.img_vocab_size = 1024  # eg. 1024
+
+
         with open(codebook_indices_path, 'rb') as f:
             self.indices_dict = pickle.load(f)
 
         self.max_img_num = max_img_num
         self.max_text_len = max_text_len
 
-        self.tokenizer = ByteLevelBPETokenizer(
-            vocab_file,
-            merge_file,
-        )
-        self.tokenizer._tokenizer.post_processor = BertProcessing(
-            ("[EOS]", self.tokenizer.token_to_id("[EOS]")),
-            ("[SOS]", self.tokenizer.token_to_id("[SOS]")),
-        )
-        self.tokenizer.enable_truncation(max_length=max_text_len)  # max_length: [SOS]와 [EOS]를 합친 최종길이의 최대값
-        self.tokenizer.enable_padding(pad_id=self.tokenizer.token_to_id("[PAD]"), pad_token="[PAD]", length=max_text_len)  # 먼저 enable_truncation에 의해 자른 후 뒤를 length까지 [PAD]로 채운다
+        self.tokenizer = tokenizer
         
         self.text_vocab_size = self.tokenizer.get_vocab_size()
 
@@ -83,7 +82,8 @@ class CXRDataset(Dataset):
         for i in range(self.max_img_num):
             y = [self.img_vocab_size + i] * self.img_len
             self.slots.extend(y)
-
+        
+        self.use_first_img = use_first_img
 
     def preprocess_image(self, image_path):  # not used now
         image = Image.open(image_path)   # PIL format
@@ -93,7 +93,7 @@ class CXRDataset(Dataset):
         image = self.preprocessor(image=image)["image"]  # albumentations의 output: {'image': numpy.ndarray(256,256,3)}
         image = (image/255.0).astype(np.float32)         # Note that you have to make image in value 0. ~ 1.
         return image   # ndarray (256, 256, 3)
-    
+
 
     def __len__(self):
         return len(self.key_list)
@@ -106,6 +106,11 @@ class CXRDataset(Dataset):
             count = self.max_img_num
         else:
             imgs_meta =self.dict_by_studyid[study_id]
+        
+        if self.use_first_img == True:
+            imgs_meta = [self.dict_by_studyid[study_id][0]]  # 덮어씌우기
+            count = 1
+        
         # image
         image_output = torch.tensor(self.slots)  # tensor[img_len * max_img_num]
         img_paths = ''
@@ -122,10 +127,6 @@ class CXRDataset(Dataset):
             data = f.read()
         src = data.replace('  ', ' ').replace('  ', ' ').lower()   # Note: 토크나이저가 lower text에서 학습됐음
         ids_list = self.tokenizer.encode(src).ids  # len: max_text_len
-        
-        # print("sos?",ids_list[0])
-        # print("ids_list",ids_list)
-        # exit()
         text_output = torch.tensor(ids_list)  # tensor[max_text_len]
         
         return {
