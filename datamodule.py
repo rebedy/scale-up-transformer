@@ -23,10 +23,10 @@ class CXRDataModule(pl.LightningDataModule):
         pass
         
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True, pin_memory = True)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(self.val, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, pin_memory = True)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, pin_memory = True)

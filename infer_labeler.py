@@ -265,7 +265,7 @@ if __name__ == "__main__":
     
     ### Output parameters.
     ### ! ###
-    parser.add_argument('--do_label', default=True, type=str2bool, help='If false, only config evaluation matric computation.')
+    parser.add_argument('--do_label', default=False, type=str2bool, help='If false, only config evaluation matric computation.')
     args = parser.parse_args()
     args.mention_phrases_dir = Path(args.mention_phrases_dir)
     args.unmention_phrases_dir = Path(args.unmention_phrases_dir)
@@ -279,13 +279,11 @@ if __name__ == "__main__":
     ### Chexpert label for the generated reports.
     usecolumn = 0
     #!#
-    hypothesis_path = Path(base_path+"chexpert_labeled_reports_hypothesis.csv")
-    # hypothesis_path = glob.glob(base_path+"GEN_*.csv")[-1]
-    
     if args.do_label:
+        hypothesis_path = Path(base_path+"chexpert_labeled_reports_hypothesis.csv")
         labeled_hypothesis = label(args, usecolumn=usecolumn, output_path=hypothesis_path)
     else:
-        labeled_hypothesis = None
+        labeled_hypothesis = glob.glob(base_path+"GEN_*.csv")[-1]
     print("\nThe labeling hypothesis took for ", datetime.datetime.now() -start, "\n\n")
     
     
@@ -294,11 +292,11 @@ if __name__ == "__main__":
     ### Chexpert label for the prime reports.
     usecolumn = 1
     #!#
-    reference_path = Path(base_path+"chexpert_labeled_reports_reference.csv")
     if args.do_label:
+        reference_path = Path(base_path+"chexpert_labeled_reports_reference.csv")
         labeled_reference = label(args, usecolumn, output_path=reference_path)
     else:
-        labeled_reference = None
+        labeled_reference = glob.glob(base_path+"GT_*.csv")[-1]
         
         
         

@@ -127,3 +127,22 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
+
+#
+=0.3.0
+
+
+# DYAN
+models/
+wandb/
+.vscode/
+_before_hands/
+examples/
+gen_reports_analysis/
+i2t_Performer_20211129/
+config/
+obw_*
+trembl_*
+requirements2.txt

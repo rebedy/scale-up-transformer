@@ -1,3 +1,4 @@
+from datetime import timedelta
 import pytorch_lightning as pl
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from torch.nn.functional import cross_entropy
@@ -52,28 +53,42 @@ class PerformerLightning_i2t(pl.LightningModule):
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
-        # self.log('train_forward', endtime-starttime)
+        _time = math.log2(endtime-starttime)
+        _peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024)
         torch.cuda.empty_cache()
+
+        self.log('train_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('time', _time, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('peak_mem', _peak_mem, on_step=True, on_epoch=True, sync_dist=True)
         
         output = {
+            'batch_idx': batch_idx,
             'loss': loss,
-            'time': math.log2(endtime-starttime),
-            'peak_mem': torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024)
-        }
+            'time': _time,
+            'peak_mem': _peak_mem
+            }
         return output
     
-    # def training_epoch_end(self, training_step_outputs):
-    #     gathered_outputs = self.all_gather(training_step_outputs)
-    #     if self.trainer.is_global_zero:
-    #         forward_time = torch.mean(gathered_outputs['time'][0])
-    #         backward_time = torch.mean(gathered_outputs['time'][1])
-    #         peak_mem = torch.mean(max(gathered_outputs['peak_mem']))
-    #         total_train_loss = torch.mean(gathered_outputs['loss'])
-    #         self.log("forward_time", forward_time)
-    #         self.log("backward_time", backward_time)
-    #         self.log("peak_mem", peak_mem)
-    #         self.log("total_train_loss", total_train_loss)
+    def training_step_end(self, training_step_outputs, *args, **kwargs):
+        if self.trainer.is_global_zero:
+            if training_step_outputs["batch_idx"] == 300:
+                print("\ntime ", round(training_step_outputs["time"],3))
+                print("peak_mem ", round(training_step_outputs["peak_mem"],3))
+            else:
+                pass
+        return training_step_outputs
+                
+        # def training_epoch_end(self, training_step_outputs):
+        #     gathered_outputs = self.all_gather(training_step_outputs)
+        #     if self.trainer.is_global_zero:
+        #         forward_time = torch.mean(gathered_outputs['time'][0])
+        #         backward_time = torch.mean(gathered_outputs['time'][1])
+        #         peak_mem = torch.mean(max(gathered_outputs['peak_mem']))
+        #         total_train_loss = torch.mean(gathered_outputs['loss'])
+        #         self.log("forward_time", forward_time)
+        #         self.log("backward_time", backward_time)
+        #         self.log("peak_mem", peak_mem)
+        #         self.log("total_train_loss", total_train_loss)
         
     def validation_step(self, batch, batch_idx):
         img_paths, study_ids, images, texts = batch['img_paths'], batch['study_id'], batch['images'], batch['texts']
@@ -145,6 +160,7 @@ class PerformerLightning_i2t(pl.LightningModule):
             bleu2 = corpus_bleu(references, candidates, weights=(1/2, 1/2, 0, 0))
             bleu3 = corpus_bleu(references, candidates, weights=(1/3, 1/3, 1/3, 0))
             bleu4 = corpus_bleu(references, candidates, weights=(1/4, 1/4, 1/4, 1/4))
+            print(f'\n\n')
             print(f'Cumulative 1-gram: {bleu1:.3f}')
             print(f'Cumulative 2-gram: {bleu2:.3f}')
             print(f'Cumulative 3-gram: {bleu3:.3f}')
@@ -156,8 +172,8 @@ class PerformerLightning_i2t(pl.LightningModule):
 
             
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_eval_'+str(bleu1)+'.csv')
-            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_eval_'+str(bleu1)+'.csv')
+            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_eval_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
+            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_eval_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
             
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -172,7 +188,7 @@ class PerformerLightning_i2t(pl.LightningModule):
             f_gt.close()
             f_gen.close()
             print("GEN_reports_eval saved.")
-            # time.sleep(0.5)
+            time.sleep(0.5)
 
             """
             # run labeler
@@ -282,6 +298,7 @@ class PerformerLightning_i2t(pl.LightningModule):
             bleu2 = corpus_bleu(references, candidates, weights=(1/2, 1/2, 0, 0))
             bleu3 = corpus_bleu(references, candidates, weights=(1/3, 1/3, 1/3, 0))
             bleu4 = corpus_bleu(references, candidates, weights=(1/4, 1/4, 1/4, 1/4))
+            print(f'\n\n')
             print(f'(test)Cumulative 1-gram: {bleu1:.3f}')
             print(f'(test)Cumulative 2-gram: {bleu2:.3f}')
             print(f'(test)Cumulative 3-gram: {bleu3:.3f}')
@@ -292,8 +309,9 @@ class PerformerLightning_i2t(pl.LightningModule):
             self.log("test_BLEU-4", bleu4)
 
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_test.csv')
-            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_test.csv')
+            
+            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_test_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
+            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_test_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
             
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
@@ -659,19 +677,20 @@ class PerformerLightning_OneBillionWords(pl.LightningModule):
 
 
 class TransformerLightning_i2t(pl.LightningModule):
-    def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2,
+    def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, save_dir="",
                  **kargs):
         super().__init__()
         self.kargs = kargs
         self.performerLM_i2t = TransformerLM_i2t(**kargs)
         self.weight_decay = weight_decay
         self.lr = lr
-        self.tokenizer = tokenizer
         self.pad_token_idx = pad_token_idx
         self.sos_token_idx = sos_token_idx
         self.eos_token_idx = eos_token_idx
+        self.save_dir = save_dir
         # call this to save hyperparameters to the checkpoint
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['tokenizer'])
+        self.tokenizer = tokenizer
 
     def forward(self, images, texts):
         logit = self.performerLM_i2t(images, texts)
@@ -679,15 +698,42 @@ class TransformerLightning_i2t(pl.LightningModule):
 
     def training_step(self, batch,
                       batch_idx):  # batch: {'images': tensor[B, img_len * max_img_num], 'texts': tensor[B, max_text_len]}
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats
         images, texts = batch['images'], batch['texts']
+        starttime = time.monotonic()
         logit = self(images, texts)  # -> [B, img_len * max_img_num + max_text_len, num_tokens]  # NOTE: num_tokens = text_vocab_size
+        endtime = time.monotonic()
+        
         condition_len = self.kargs['condition_len']
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
-        self.log('train_loss', loss)
-        return loss
-
+        _time = math.log2(endtime-starttime)
+        _peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024)
+        torch.cuda.empty_cache()
+        
+        self.log('train_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('time', _time, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('peak_mem', _peak_mem, on_step=True, on_epoch=True, sync_dist=True)
+        
+        output = {
+            'batch_idx': batch_idx,
+            'loss': loss,
+            'time': _time,
+            'peak_mem': _peak_mem
+            }
+        return output
+    
+    def training_step_end(self, training_step_outputs, *args, **kwargs):
+        if self.trainer.is_global_zero:
+            if training_step_outputs["batch_idx"] == 300:
+                print("\ntime ", round(training_step_outputs["time"],3))
+                print("peak_mem ", round(training_step_outputs["peak_mem"],3))
+            else:
+                pass
+        return training_step_outputs
+        
     def validation_step(self, batch, batch_idx):
         img_paths, study_ids, images, texts = batch['img_paths'], batch['study_id'], batch['images'], batch['texts']
         # img_paths, study_ids: list    images: [B, tot_img_len]   texts: [B, max_text_len]
@@ -697,6 +743,7 @@ class TransformerLightning_i2t(pl.LightningModule):
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
         # self.log('val_loss', loss)
+        self.log('val_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
 
         gen_texts = self.performerLM_i2t.generate_texts(  # gen_texts: tensor[B, <max_text_len]
             images,
@@ -756,6 +803,7 @@ class TransformerLightning_i2t(pl.LightningModule):
             bleu2 = corpus_bleu(references, candidates, weights=(1 / 2, 1 / 2, 0, 0))
             bleu3 = corpus_bleu(references, candidates, weights=(1 / 3, 1 / 3, 1 / 3, 0))
             bleu4 = corpus_bleu(references, candidates, weights=(1 / 4, 1 / 4, 1 / 4, 1 / 4))
+            print(f'\n\n')
             print(f'Cumulative 1-gram: {bleu1:.3f}')
             print(f'Cumulative 2-gram: {bleu2:.3f}')
             print(f'Cumulative 3-gram: {bleu3:.3f}')
@@ -765,12 +813,12 @@ class TransformerLightning_i2t(pl.LightningModule):
             self.log("val_BLEU-3", bleu3)
             self.log("val_BLEU-4", bleu4)
 
-            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
 
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_temp.csv')
-            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_temp.csv')
-
+            
+            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_eval_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
+            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_eval_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
+            
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
 
@@ -783,8 +831,7 @@ class TransformerLightning_i2t(pl.LightningModule):
 
             f_gt.close()
             f_gen.close()
-
-            print('Finished Saving Files')
+            print("GEN_reports_eval saved.")
             time.sleep(0.5)
 
             """
@@ -900,6 +947,7 @@ class TransformerLightning_i2t(pl.LightningModule):
             bleu2 = corpus_bleu(references, candidates, weights=(1 / 2, 1 / 2, 0, 0))
             bleu3 = corpus_bleu(references, candidates, weights=(1 / 3, 1 / 3, 1 / 3, 0))
             bleu4 = corpus_bleu(references, candidates, weights=(1 / 4, 1 / 4, 1 / 4, 1 / 4))
+            print(f'\n\n')
             print(f'(test)Cumulative 1-gram: {bleu1:.3f}')
             print(f'(test)Cumulative 2-gram: {bleu2:.3f}')
             print(f'(test)Cumulative 3-gram: {bleu3:.3f}')
@@ -909,12 +957,11 @@ class TransformerLightning_i2t(pl.LightningModule):
             self.log("test_BLEU-3", bleu3)
             self.log("test_BLEU-4", bleu4)
 
-            dirpath = '/home/edlab/jylee/Scaleup/output/Performer'
-
             # save csv files for labeler
-            GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_test.csv')
-            GEN_REPORTS_PATH = os.path.join(dirpath, 'GEN_reports_test.csv')
-
+            
+            GT_REPORTS_PATH = os.path.join(self.save_dir, 'GT_reports_test_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
+            GEN_REPORTS_PATH = os.path.join(self.save_dir, 'GEN_reports_twst_'+str(round(bleu1, 3))+'_'+str(round(bleu2, 3))+'_'+str(round(bleu3, 3))+'_'+str(round(bleu4, 3))+'.csv')
+            
             f_gt = open(GT_REPORTS_PATH, 'w')
             wr_gt = csv.writer(f_gt)
 
