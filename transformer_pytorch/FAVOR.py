@@ -183,14 +183,8 @@ def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_si
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
 def conditioned_causal_linear_attention(q, k, v, condition_len, chunk_size = 32, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
-    from fast_transformers.causal_product import CausalDotProduct
-    autocast_enabled = torch.is_autocast_enabled()
-    is_half = isinstance(q, torch.cuda.HalfTensor)
-    assert not is_half or APEX_AVAILABLE, 'half tensors can only be used if nvidia apex is available'
-    cuda_context = null_context if not autocast_enabled else partial(autocast, enabled = False)
-
-    causal_dot_product_fn = amp.float_function(CausalDotProduct.apply) if is_half else CausalDotProduct.apply
-
+    
+    ## image part
     condition_q = q[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_k = k[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_v = v[:, :, :condition_len]  # [B, global_head, condition_len, dim_head]
@@ -198,35 +192,40 @@ def conditioned_causal_linear_attention(q, k, v, condition_len, chunk_size = 32,
     condition_k_cumsum = condition_k.sum(dim = -2)  # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당. 
     condition_D_inv = 1. / torch.einsum('...nd,...d->...n', condition_q, condition_k_cumsum.type_as(condition_q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
     condition_context = torch.einsum('...nd,...ne->...de', condition_k, condition_v) # -> [B, global_head, nb_features, dim_head]   n에 해당하는 차원(seq_len) 으로 sum됨. 논문의 식에서 (K')T V
-    # condition_out = torch.einsum('...de,...nd,...n->...ne', condition_context, condition_q, condition_D_inv) # -> [B, global_head, seq_len, dim_head]   # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
+    condition_out = torch.einsum('...de,...nd,...n->...ne', condition_context, condition_q, condition_D_inv) # -> [B, global_head, seq_len, dim_head]   # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
+    
     last_k_cumsum = condition_k_cumsum.unsqueeze(2)
     last_context_cumsum = condition_context.unsqueeze(2)
-    
-    with cuda_context():
-        if autocast_enabled:
-            condition_q, condition_k, condition_v = map(lambda t: t.float(), (condition_q, condition_k, condition_v))
-
-        out = causal_dot_product_fn(condition_q, condition_k, condition_v) #[b, global_head, seq_len, nb_features]
-    
-    condition_out = torch.einsum('...nd,...n->...nd', out, condition_D_inv) #[b, global_head, seq_len, nb_features]
-    
     outs = [condition_out]
     
-    # chunk화해서 for문 돌리는 이유: 메모리를 좀 더 써서 for문을 적게 돌겠다.
-    for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))): #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
-        k_cumsum = last_k_cumsum + k.cumsum(dim=-2) # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
+    ## efficient causal linear attention, created by EPFL
+    
+    from fast_transformers.causal_product import CausalDotProduct
+    from fast_transformers.local_product import LocalDotProduct
+    autocast_enabled = torch.is_autocast_enabled()
+    is_half = isinstance(q, torch.cuda.HalfTensor)
+    assert not is_half or APEX_AVAILABLE, 'half tensors can only be used if nvidia apex is available'
+    cuda_context = null_context if not autocast_enabled else partial(autocast, enabled = False)
+    causal_dot_product_fn = amp.float_function(CausalDotProduct.apply) if is_half else CausalDotProduct.apply
+    local_dot_product_fn = amp.float_function(LocalDotProduct.apply) if is_half else LocalDotProduct.apply
 
-        D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q) + eps) # -> [B, global_head, seq_len/chunk_size]  논문의 식에서 Q' ((K')T 1L)에 해당. 다만 층위구조.
-        context = torch.einsum('...nd,...ne->...nde', k, v)  # -> [B, global_head, seq_len/chunk_size, nb_features ,dim_head] outer product.  논문의 식에서 (K')T V.  다만 같은 seq 위치별로.
-        context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
-        out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
+    q = q[:, :, condition_len:] #q,k:[B, global_head, seq_len/chunk_size, nb_features]
+    k = k[:, :, condition_len:]
+    v = v[:, :, condition_len:] #  v:[B, global_head, seq_len/chunk_size, dim_head]
+    
+    k_cumsum = last_k_cumsum + k.cumsum(dim=-2) + eps # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
+    D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q))
 
-        last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요.
-        last_context_cumsum = context_cumsum[:, :, -1:]  # [B, global_head, 1, nb_features ,dim_head]  # 이건 다음 for문(다음 chunk)에서 context_cumsum를 구하기 위해 필요.
-        outs.append(out)
+    with cuda_context():
+        if autocast_enabled:
+            q, k, v = map(lambda t: t.float(), (q, k, v))
+
+        out = causal_dot_product_fn(q, k, v)
+
+    out = torch.einsum('...nd,...n->...nd', out, D_inv)
+    outs.append(out)
 
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
-
 
 
 class FastAttention(nn.Module):

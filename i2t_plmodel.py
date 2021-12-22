@@ -48,14 +48,14 @@ class PerformerLightning_i2t(pl.LightningModule):
         starttime = time.monotonic()
         logit = self(images, texts)    # -> [B, img_len * max_img_num + max_text_len, num_tokens]  # NOTE: num_tokens = text_vocab_size
         endtime = time.monotonic()
-        # print(f'forward time: {math.log2(endtime-starttime)}')
+        
         condition_len = self.kargs['condition_len']
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
         _time = math.log2(endtime-starttime)
         _peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024)
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
         self.log('train_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
         self.log('time', _time, on_step=True, on_epoch=True, sync_dist=True)
@@ -98,7 +98,8 @@ class PerformerLightning_i2t(pl.LightningModule):
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
-        self.log('val_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('val_loss', loss)
+        # self.log('val_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
 
         gen_texts = self.performerLM_i2t.generate_texts(  # gen_texts: tensor[B, <max_text_len]
             images,
@@ -124,8 +125,7 @@ class PerformerLightning_i2t(pl.LightningModule):
 
         total_val_loss = torch.mean(gathered_validation_step_outputs[0]['val_loss'])
         if self.trainer.is_global_zero:
-            self.log("val_loss", total_val_loss)
-        # self.log('val_loss', total_val_loss)
+            self.log("val_loss_epoch", total_val_loss)
 
         max_text_len = gathered_validation_step_outputs[0]['GT_text'].size(-1)
         total_GT_text = torch.empty(0, max_text_len).type_as(gathered_validation_step_outputs[0]['GT_text'])
@@ -137,7 +137,7 @@ class PerformerLightning_i2t(pl.LightningModule):
             total_gen_text = torch.cat((total_gen_text, gen_text), dim=0)
         # -> total_gen_text, total_GT_text: [valset_size, max_text_len]
         
-        if self.global_rank == 0:    # 이건 왜 있는 거지?
+        if self.global_rank == 0:    
             GT_decoded_texts = []
             gen_decoded_texts = []
             for gt_text_i, gen_text_i in zip(total_GT_text, total_gen_text):
@@ -416,265 +416,7 @@ class PerformerLightning_i2t(pl.LightningModule):
 
 
 
-
 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
-class PerformerLightning_protein(pl.LightningModule):
-    def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, **kargs):
-        super().__init__()
-        self.kargs = kargs
-        self.performerLM_protein = PerformerLM_Protein(**kargs)
-        self.weight_decay = weight_decay
-        self.lr = lr
-        self.tokenizer = tokenizer
-        self.pad_token_idx = pad_token_idx
-        self.sos_token_idx = sos_token_idx
-        self.eos_token_idx = eos_token_idx
-        self.save_hyperparameters()
-
-    def forward(self, data):
-        logit = self.performerLM_protein(data)
-        return logit
-
-    def training_step(self, batch, batch_idx):
-        data = batch
-        starttime = time.monotonic()
-        logit = self(data)
-        endtime = time.monotonic()
-        # print(f'forward time: {math.log2(endtime-starttime)}')
-        logit = logit.reshape(-1, 30)
-        data = data.reshape(-1)
-        loss = cross_entropy(logit, data, ignore_index=0)
-        self.log('train_loss', loss)
-        # self.log('train_forward', endtime-starttime)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        data = batch
-        gen_proteins = self.performerLM_protein.generate_proteins(data)
-
-        # loss = cross_entropy(logit.reshape(-1, 30), data.reshape(-1), ignore_index=0)
-        output = {
-            'label': data,
-            'predict': gen_proteins,
-            # 'val_loss': loss
-        }
-
-        data = data.reshape(-1)
-        gen_proteins = gen_proteins.reshape(-1)
-
-        acc = (data == gen_proteins).sum()
-        acc = acc / gen_proteins.size(0)
-        self.log('val_acc', acc)
-
-        return output
-
-    def validation_step_end(self, validation_step_outputs):
-        gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
-
-        # total_val_loss = torch.mean(gathered_validation_step_outputs['val_loss'])
-        # self.log('val_loss', total_val_loss)
-
-        # total_predict = gathered_validation_step_outputs['predict'].reshape(-1, 30)
-        # total_predict = total_predict.argmax(-1)
-
-        total_label = gathered_validation_step_outputs['label'].reshape(-1)
-        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
-
-        acc = (total_predict == total_label).sum()
-        acc = acc / total_predict.size(0)
-        self.log('val_total_acc', acc)
-
-    def test_step(self, batch, batch_idx):
-        data = batch
-        gen_proteins = self.performerLM_protein.generate_proteins(data)
-
-        # loss = cross_entropy(logit.reshape(-1, 30), data.reshape(-1), ignore_index=0)
-        output = {
-            'label': data,
-            'predict': gen_proteins,
-            # 'val_loss': loss
-        }
-        return output
-
-    def test_step_end(self, test_step_outputs):
-        gathered_validation_step_outputs = self.all_gather(test_step_outputs)
-
-        # total_val_loss = torch.mean(gathered_validation_step_outputs['val_loss'])
-        # self.log('val_loss', total_val_loss)
-
-        # total_predict = gathered_validation_step_outputs['predict'].reshape(-1, 30)
-        # total_predict = total_predict.argmax(-1)
-
-        total_label = gathered_validation_step_outputs['label'].reshape(-1)
-        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
-
-        acc = (total_predict == total_label).sum()
-        acc = acc / total_predict.size(0)
-        self.log('test_acc', acc)
-
-
-    def configure_optimizers(self):
-        all_params = set(self.parameters())
-        wd_params = set()
-        decay_module = (nn.Embedding, nn.Linear, nn.Conv2d)
-        for m in self.modules():
-            if isinstance(m, decay_module):
-                wd_params.add(m.weight)
-
-
-        no_wd_params = all_params - wd_params
-        wd_params = list(wd_params)
-        no_wd_params = list(no_wd_params)
-
-        optimizer_grouped_parameters = [
-            {
-                "params": wd_params,
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": no_wd_params,
-                "weight_decay": 0.0,
-            }
-        ]
-
-        optimizer = AdamW(optimizer_grouped_parameters, lr=self.lr)
-
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=0.5,
-            patience=10,
-            cooldown=10,
-            min_lr=1e-6,
-            verbose=True,
-        )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "train_loss"}
-
-
-class PerformerLightning_OneBillionWords(pl.LightningModule):
-    def __init__(self, lr=5e-4, weight_decay=0.01, **kargs):
-        super().__init__()
-        self.kargs = kargs
-        self.performerLM_OneBillionWords = PerformerLM_OneBillionWords(**kargs)
-        self.weight_decay = weight_decay
-        self.lr = lr
-        self.save_hyperparameters()
-
-    def forward(self, data):
-        logit = self.performerLM_OneBillionWords(data)
-        return logit
-
-    def training_step(self, batch, batch_idx):
-        data = batch['data']
-        label = batch['label']
-        starttime = time.monotonic()
-        logit = self(data)
-        endtime = time.monotonic()
-        # print(f'forward time: {math.log2(endtime-starttime)}')
-        logit = logit.reshape(-1, 30522)
-        label = label.reshape(-1)
-        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
-
-        ppl = torch.exp(loss[torch.where(loss != 0.)]).mean()
-
-        mask_count = (data == 103).sum()
-        loss = (loss.sum() / mask_count)
-
-        metric = {
-            'train_loss': loss,
-            'train_ppl': ppl
-        }
-        self.log_dict(metric)
-        # self.log('train_forward', endtime-starttime)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        data = batch['data']
-        label = batch['label']
-
-        logit = self(data)
-        logit = logit.reshape(-1, 30522)
-        label = label.reshape(-1)
-        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
-
-        return loss
-
-    def validation_step_end(self, validation_step_outputs):
-        eval_loss = self.all_gather(validation_step_outputs)
-
-        ppl = torch.exp(eval_loss[torch.where(eval_loss != 0.)]).mean()
-
-        mask_count = (eval_loss != 0).sum()
-        loss = (eval_loss.sum() / mask_count)
-
-        metric = {
-            'eval_loss': loss,
-            'eval_ppl': ppl
-        }
-
-        self.log_dict(metric)
-
-    def test_step(self, batch, batch_idx):
-        data = batch['data']
-        label = batch['label']
-
-        logit = self(data)
-        logit = logit.reshape(-1, 30522)
-        label = label.reshape(-1)
-        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
-        return loss
-
-    def test_step_end(self, test_step_outputs):
-        test_loss = self.all_gather(test_step_outputs)
-
-        ppl = torch.exp(test_loss[torch.where(test_loss != 0.)]).mean()
-
-        mask_count = (test_loss != 0.).sum()
-        loss = (test_loss.sum() / mask_count)
-
-        metric = {
-            'test_loss': loss,
-            'test_ppl': ppl
-        }
-
-        self.log_dict(metric)
-
-    def configure_optimizers(self):
-        all_params = set(self.parameters())
-        wd_params = set()
-        decay_module = (nn.Embedding, nn.Linear, nn.Conv2d)
-        for m in self.modules():
-            if isinstance(m, decay_module):
-                wd_params.add(m.weight)
-
-        no_wd_params = all_params - wd_params
-        wd_params = list(wd_params)
-        no_wd_params = list(no_wd_params)
-
-        optimizer_grouped_parameters = [
-            {
-                "params": wd_params,
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": no_wd_params,
-                "weight_decay": 0.0,
-            }
-        ]
-
-        optimizer = AdamW(optimizer_grouped_parameters, lr=self.lr)
-
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=0.5,
-            patience=10,
-            cooldown=10,
-            min_lr=1e-6,
-            verbose=True,
-        )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "eval_loss"}
-
 
 class TransformerLightning_i2t(pl.LightningModule):
     def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, save_dir="",
@@ -711,7 +453,7 @@ class TransformerLightning_i2t(pl.LightningModule):
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
         _time = math.log2(endtime-starttime)
         _peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024)
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         
         self.log('train_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
         self.log('time', _time, on_step=True, on_epoch=True, sync_dist=True)
@@ -742,8 +484,8 @@ class TransformerLightning_i2t(pl.LightningModule):
         target = texts[:, 1:].reshape(-1)
         logit = logit[:, condition_len:-1].reshape(-1, logit.size(-1))
         loss = cross_entropy(logit, target, ignore_index=self.pad_token_idx)
-        # self.log('val_loss', loss)
-        self.log('val_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('val_loss', loss)
+        # self.log('val_loss', loss, on_step=True, on_epoch=True, sync_dist=True)
 
         gen_texts = self.performerLM_i2t.generate_texts(  # gen_texts: tensor[B, <max_text_len]
             images,
@@ -768,7 +510,8 @@ class TransformerLightning_i2t(pl.LightningModule):
         gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
 
         total_val_loss = torch.mean(gathered_validation_step_outputs[0]['val_loss'])
-        self.log('val_loss', total_val_loss)
+        if self.trainer.is_global_zero:
+            self.log("val_loss_epoch", total_val_loss)
 
         max_text_len = gathered_validation_step_outputs[0]['GT_text'].size(-1)
         total_GT_text = torch.empty(0, max_text_len).type_as(gathered_validation_step_outputs[0]['GT_text'])
@@ -1057,6 +800,285 @@ class TransformerLightning_i2t(pl.LightningModule):
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
         # TODO: 추후 scheduler 변경도 고려해보기
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class PerformerLightning_protein(pl.LightningModule):
+    def __init__(self, lr=5e-4, weight_decay=0.01, tokenizer=None, pad_token_idx=0, sos_token_idx=1, eos_token_idx=2, **kargs):
+        super().__init__()
+        self.kargs = kargs
+        self.performerLM_protein = PerformerLM_Protein(**kargs)
+        self.weight_decay = weight_decay
+        self.lr = lr
+        self.tokenizer = tokenizer
+        self.pad_token_idx = pad_token_idx
+        self.sos_token_idx = sos_token_idx
+        self.eos_token_idx = eos_token_idx
+        self.save_hyperparameters()
+
+    def forward(self, data):
+        logit = self.performerLM_protein(data)
+        return logit
+
+    def training_step(self, batch, batch_idx):
+        data = batch
+        starttime = time.monotonic()
+        logit = self(data)
+        endtime = time.monotonic()
+        # print(f'forward time: {math.log2(endtime-starttime)}')
+        logit = logit.reshape(-1, 30)
+        data = data.reshape(-1)
+        loss = cross_entropy(logit, data, ignore_index=0)
+        self.log('train_loss', loss)
+        # self.log('train_forward', endtime-starttime)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data = batch
+        gen_proteins = self.performerLM_protein.generate_proteins(data)
+
+        # loss = cross_entropy(logit.reshape(-1, 30), data.reshape(-1), ignore_index=0)
+        output = {
+            'label': data,
+            'predict': gen_proteins,
+            # 'val_loss': loss
+        }
+
+        data = data.reshape(-1)
+        gen_proteins = gen_proteins.reshape(-1)
+
+        acc = (data == gen_proteins).sum()
+        acc = acc / gen_proteins.size(0)
+        self.log('val_acc', acc)
+
+        return output
+
+    def validation_step_end(self, validation_step_outputs):
+        gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
+
+        # total_val_loss = torch.mean(gathered_validation_step_outputs['val_loss'])
+        # self.log('val_loss', total_val_loss)
+
+        # total_predict = gathered_validation_step_outputs['predict'].reshape(-1, 30)
+        # total_predict = total_predict.argmax(-1)
+
+        total_label = gathered_validation_step_outputs['label'].reshape(-1)
+        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
+
+        acc = (total_predict == total_label).sum()
+        acc = acc / total_predict.size(0)
+        self.log('val_total_acc', acc)
+
+    def test_step(self, batch, batch_idx):
+        data = batch
+        gen_proteins = self.performerLM_protein.generate_proteins(data)
+
+        # loss = cross_entropy(logit.reshape(-1, 30), data.reshape(-1), ignore_index=0)
+        output = {
+            'label': data,
+            'predict': gen_proteins,
+            # 'val_loss': loss
+        }
+        return output
+
+    def test_step_end(self, test_step_outputs):
+        gathered_validation_step_outputs = self.all_gather(test_step_outputs)
+
+        # total_val_loss = torch.mean(gathered_validation_step_outputs['val_loss'])
+        # self.log('val_loss', total_val_loss)
+
+        # total_predict = gathered_validation_step_outputs['predict'].reshape(-1, 30)
+        # total_predict = total_predict.argmax(-1)
+
+        total_label = gathered_validation_step_outputs['label'].reshape(-1)
+        total_predict = gathered_validation_step_outputs['predict'].reshape(-1)
+
+        acc = (total_predict == total_label).sum()
+        acc = acc / total_predict.size(0)
+        self.log('test_acc', acc)
+
+
+    def configure_optimizers(self):
+        all_params = set(self.parameters())
+        wd_params = set()
+        decay_module = (nn.Embedding, nn.Linear, nn.Conv2d)
+        for m in self.modules():
+            if isinstance(m, decay_module):
+                wd_params.add(m.weight)
+
+
+        no_wd_params = all_params - wd_params
+        wd_params = list(wd_params)
+        no_wd_params = list(no_wd_params)
+
+        optimizer_grouped_parameters = [
+            {
+                "params": wd_params,
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": no_wd_params,
+                "weight_decay": 0.0,
+            }
+        ]
+
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.lr)
+
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            cooldown=10,
+            min_lr=1e-6,
+            verbose=True,
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "train_loss"}
+
+
+class PerformerLightning_OneBillionWords(pl.LightningModule):
+    def __init__(self, lr=5e-4, weight_decay=0.01, **kargs):
+        super().__init__()
+        self.kargs = kargs
+        self.performerLM_OneBillionWords = PerformerLM_OneBillionWords(**kargs)
+        self.weight_decay = weight_decay
+        self.lr = lr
+        self.save_hyperparameters()
+
+    def forward(self, data):
+        logit = self.performerLM_OneBillionWords(data)
+        return logit
+
+    def training_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+        starttime = time.monotonic()
+        logit = self(data)
+        endtime = time.monotonic()
+        # print(f'forward time: {math.log2(endtime-starttime)}')
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+
+        ppl = torch.exp(loss[torch.where(loss != 0.)]).mean()
+
+        mask_count = (data == 103).sum()
+        loss = (loss.sum() / mask_count)
+
+        metric = {
+            'train_loss': loss,
+            'train_ppl': ppl
+        }
+        self.log_dict(metric)
+        # self.log('train_forward', endtime-starttime)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+
+        return loss
+
+    def validation_step_end(self, validation_step_outputs):
+        eval_loss = self.all_gather(validation_step_outputs)
+
+        ppl = torch.exp(eval_loss[torch.where(eval_loss != 0.)]).mean()
+
+        mask_count = (eval_loss != 0).sum()
+        loss = (eval_loss.sum() / mask_count)
+
+        metric = {
+            'eval_loss': loss,
+            'eval_ppl': ppl
+        }
+
+        self.log_dict(metric)
+
+    def test_step(self, batch, batch_idx):
+        data = batch['data']
+        label = batch['label']
+
+        logit = self(data)
+        logit = logit.reshape(-1, 30522)
+        label = label.reshape(-1)
+        loss = cross_entropy(logit, label, ignore_index=-100, reduction='none')
+        return loss
+
+    def test_step_end(self, test_step_outputs):
+        test_loss = self.all_gather(test_step_outputs)
+
+        ppl = torch.exp(test_loss[torch.where(test_loss != 0.)]).mean()
+
+        mask_count = (test_loss != 0.).sum()
+        loss = (test_loss.sum() / mask_count)
+
+        metric = {
+            'test_loss': loss,
+            'test_ppl': ppl
+        }
+
+        self.log_dict(metric)
+
+    def configure_optimizers(self):
+        all_params = set(self.parameters())
+        wd_params = set()
+        decay_module = (nn.Embedding, nn.Linear, nn.Conv2d)
+        for m in self.modules():
+            if isinstance(m, decay_module):
+                wd_params.add(m.weight)
+
+        no_wd_params = all_params - wd_params
+        wd_params = list(wd_params)
+        no_wd_params = list(no_wd_params)
+
+        optimizer_grouped_parameters = [
+            {
+                "params": wd_params,
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": no_wd_params,
+                "weight_decay": 0.0,
+            }
+        ]
+
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.lr)
+
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            cooldown=10,
+            min_lr=1e-6,
+            verbose=True,
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "eval_loss"}
 
 
 class TransformerLightning_protein(pl.LightningModule):
