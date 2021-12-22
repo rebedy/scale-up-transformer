@@ -27,7 +27,7 @@ from chexpert_labeler.constants.constants import *
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, roc_auc_score
 
 
-def label(args, usecolumn, output_path):
+def label_usecolumn(args, usecolumn, output_path):
     """Label the provided report(s)."""
 
     loader = Loader(args.reports_path, args.extract_impression, usecolumn)
@@ -69,6 +69,47 @@ def label(args, usecolumn, output_path):
     
     return labeled_reports
 
+
+def label(args, output_path):
+    """Label the provided report(s)."""
+
+    loader = Loader(args.reports_path, args.extract_impression)
+
+    extractor = Extractor(args.mention_phrases_dir,
+                          args.unmention_phrases_dir,
+                          verbose=args.verbose)
+    classifier = Classifier(args.pre_negation_uncertainty_path,
+                            args.negation_path,
+                            args.post_negation_uncertainty_path,
+                            verbose=args.verbose)
+    aggregator = Aggregator(CATEGORIES,
+                            verbose=args.verbose)
+
+    # Load reports in place.
+    loader.load()
+
+    # Extract observation mentions in place.
+    extractor.extract(loader.collection)
+    # Classify mentions in place.
+    classifier.classify(loader.collection)
+    # Aggregate mentions to obtain one set of labels for each report.
+    labels = aggregator.aggregate(loader.collection)
+    
+    
+    """Write labeled reports to specified path."""
+    reports = loader.reports
+
+    verbose= args.verbose
+    labeled_reports = pd.DataFrame({REPORTS: reports})
+    for index, category in enumerate(CATEGORIES):
+        labeled_reports[category] = labels[:, index]
+    if verbose:
+        print(f"Writing reports and labels to {output_path}.")
+        
+    labeled_reports = labeled_reports[[REPORTS] + CATEGORIES][1:]#.fillna(0)
+    labeled_reports.to_csv(output_path, index=False)  #column name del.
+    
+    return labeled_reports
 
 
 
@@ -256,7 +297,7 @@ if __name__ == "__main__":
     parser.add_argument('--extract_impression', action='store_true', help='Extract the impression section of the report.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Print progress to stdout.')
     # Phrases & Rules
-    chex_base = "/home/dylee/__workspace/scaleup_transformer-master/chexpert_labeler/"
+    chex_base = "/home/dylee/__workspace/scale-up-transformer/chexpert_labeler/"
     parser.add_argument('--mention_phrases_dir', default=chex_base+'phrases/mention', help='Directory containing mention phrases for each observation.')
     parser.add_argument('--unmention_phrases_dir', default=chex_base+'phrases/unmention', help='Directory containing unmention phrases for each observation.')
     parser.add_argument('--pre_negation_uncertainty_path', default=chex_base+'patterns/pre_negation_uncertainty.txt', help='Path to pre-negation uncertainty rules.')
@@ -265,38 +306,44 @@ if __name__ == "__main__":
     
     ### Output parameters.
     ### ! ###
-    parser.add_argument('--do_label', default=False, type=str2bool, help='If false, only config evaluation matric computation.')
+    parser.add_argument('--do_label_gen', default=False, type=str2bool, help='If false, only config evaluation matric computation.')
+    parser.add_argument('--do_label_gt', default=True, type=str2bool, help='If false, only config evaluation matric computation.')
     args = parser.parse_args()
     args.mention_phrases_dir = Path(args.mention_phrases_dir)
     args.unmention_phrases_dir = Path(args.unmention_phrases_dir)
 
     
     ######### ! #########
-    base_path = "metadata/epoch=46_gen/"
+    base_path = "metadata/2of2/trans_gen/"
     # args.reports_path = glob.glob(base_path+"test_*.csv")[-1]
+    
+    ##!## Chexpert label for the generated reports.
     args.reports_path = glob.glob(base_path+"GEN_*.csv")[-1]
-
-    ### Chexpert label for the generated reports.
-    usecolumn = 0
-    #!#
-    if args.do_label:
-        hypothesis_path = Path(base_path+"chexpert_labeled_reports_hypothesis.csv")
-        labeled_hypothesis = label(args, usecolumn=usecolumn, output_path=hypothesis_path)
+    hypothesis_path = Path(base_path+"chexpert_labeled_reports_hypothesis.csv")
+    if args.do_label_gen:
+        # usecolumn = 0
+        # labeled_hypothesis = label(args, usecolumn=usecolumn, output_path=hypothesis_path)
+        labeled_hypothesis = label(args, output_path=hypothesis_path)
+        print("Generated text labeling DONE!")
+        exit()
     else:
-        labeled_hypothesis = glob.glob(base_path+"GEN_*.csv")[-1]
+        pass
+        # labeled_hypothesis = glob.glob(base_path+"labeled_GEN_*.csv")[-1]
     print("\nThe labeling hypothesis took for ", datetime.datetime.now() -start, "\n\n")
     
     
+    ##!## Chexpert label for the prime reports.
     args.reports_path = glob.glob(base_path+"GT_*.csv")[-1]
-    
-    ### Chexpert label for the prime reports.
-    usecolumn = 1
-    #!#
-    if args.do_label:
-        reference_path = Path(base_path+"chexpert_labeled_reports_reference.csv")
-        labeled_reference = label(args, usecolumn, output_path=reference_path)
+    reference_path = Path(base_path+"chexpert_labeled_reports_reference.csv")
+    if args.do_label_gt:
+        # usecolumn = 1
+        # labeled_reference = label(args, usecolumn, output_path=reference_path)
+        labeled_reference = label(args, output_path=reference_path)
+        # print("Ground truth labeling DONE!")
+        # exit()
     else:
-        labeled_reference = glob.glob(base_path+"GT_*.csv")[-1]
+        pass
+        # labeled_reference = glob.glob(base_path+"labeled_GT_*.csv")[-1]
         
         
         
@@ -306,10 +353,10 @@ if __name__ == "__main__":
     ######
     metric_pos1, metric_0, metric_neg1, metric_all, accuracy_all_list, precision_all_list, recall_all_list, f1_all_list = get_label_accuracy_v4(hypothesis = hypothesis_path, reference = reference_path)
     print(metric_all)
-    print("(micro) accuracy, precision, recall, f1, auroc for ALL : {}, {}, {}, {}".format(round(metric_all[0], 4), round(metric_all[1], 4), round(metric_all[2], 4), round(metric_all[3], 4), round(metric_all[4], 4)))
-    print("(micro) accuracy, precision, recall, f1, auroc for pos1: {}, {}, {}, {}, {}".format(round(metric_pos1[0], 4), round(metric_pos1[1], 4), round(metric_pos1[2], 4), round(metric_pos1[3], 4), round(metric_pos1[4], 4)))
-    print("(micro) accuracy, precision, recall, f1, auroc for zero: {}, {}, {}, {}, {}".format(round(metric_0[0], 4), round(metric_0[1], 4), round(metric_0[2], 4), round(metric_0[3], 4), round(metric_pos1[4], 4)))
-    print("(micro) accuracy, precision, recall, f1, auroc for neg1: {}, {}, {}, {}, {}".format(round(metric_neg1[0], 4), round(metric_neg1[1], 4), round(metric_neg1[2], 4), round(metric_neg1[3], 4), round(metric_pos1[4], 4)))
+    print("(micro) accuracy, precision, recall, f1, auroc for ALL : {}, {}, {}, {}".format(round(metric_all[0], 3), round(metric_all[1], 3), round(metric_all[2], 3), round(metric_all[3], 3), round(metric_all[4], 3)))
+    print("(micro) accuracy, precision, recall, f1, auroc for pos1: {}, {}, {}, {}, {}".format(round(metric_pos1[0], 3), round(metric_pos1[1], 3), round(metric_pos1[2], 3), round(metric_pos1[3], 3), round(metric_pos1[4], 3)))
+    print("(micro) accuracy, precision, recall, f1, auroc for zero: {}, {}, {}, {}, {}".format(round(metric_0[0], 3), round(metric_0[1], 3), round(metric_0[2], 3), round(metric_0[3], 3), round(metric_pos1[4], 3)))
+    print("(micro) accuracy, precision, recall, f1, auroc for neg1: {}, {}, {}, {}, {}".format(round(metric_neg1[0], 3), round(metric_neg1[1], 3), round(metric_neg1[2], 3), round(metric_neg1[3], 3), round(metric_pos1[4], 3)))
     # print("(micro) auroc_multi_ovr", auroc_multi_ovr)
     
     ######

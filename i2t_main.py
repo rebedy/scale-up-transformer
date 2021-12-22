@@ -22,6 +22,7 @@ from datamodule import CXRDataModule
 """
 CUDA_VISIBLE_DEVICES=2,3 python3 i2t_main.py --transformer
 
+CUDA_VISIBLE_DEVICES=0 python3 i2t_main.py --transformer --FAVOR
 CUDA_VISIBLE_DEVICES=0,1 python3 i2t_main.py --transformer --FAVOR
 CUDA_VISIBLE_DEVICES=2,3 python3 i2t_main.py --transformer --FAVOR --generalized_attention
 
@@ -59,7 +60,7 @@ if __name__ == '__main__':
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
     parser.add_argument('--seed', default=42, type=int)
     #!#
-    parser.add_argument('--batch_size', default=12, type=int)
+    parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--n_gpus', default=2, type=int)
     parser.add_argument('--num_sanity_val_steps', default=0, type=int)
     parser.add_argument('--gradient_clip_val', default=5, type=float)
@@ -262,7 +263,7 @@ if __name__ == '__main__':
 
     # instrument experiment with W&B
 
-    wandb_logger = WandbLogger(entity='scaleup', project='i2t_Performer__'+TODAY, log_model=True, config=args)
+    wandb_logger = WandbLogger(entity='sut', project='i2t_Performer_'+TODAY, log_model=True, config=args)
     
     if (args.fp16 == True and args.sharded_ddp == True):
         trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded',
