@@ -643,7 +643,7 @@ class TransformerLightning_i2t(pl.LightningModule):
             self.log("val_BLEU-3", bleu3)
             self.log("val_BLEU-4", bleu4)
 
-            dirpath = f'/home/edlab/jylee/Scaleup/output/{self.sav_dir}'
+            dirpath = f'/home/edlab/jylee/Scaleup/output/i2t/{self.sav_dir}'
 
             # save csv files for labeler
             GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_temp.csv')
@@ -787,7 +787,7 @@ class TransformerLightning_i2t(pl.LightningModule):
             self.log("test_BLEU-3", bleu3)
             self.log("test_BLEU-4", bleu4)
 
-            dirpath = f'/home/edlab/jylee/Scaleup/output/{self.sav_dir}'
+            dirpath = f'/home/edlab/jylee/Scaleup/output/i2t/{self.sav_dir}'
 
             # save csv files for labeler
             GT_REPORTS_PATH = os.path.join(dirpath, 'GT_reports_test.csv')

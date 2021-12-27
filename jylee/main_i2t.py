@@ -20,7 +20,7 @@ from utils import str2bool
 if __name__ == '__main__':
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
     parser = argparse.ArgumentParser()
     # dataset args
@@ -29,9 +29,9 @@ if __name__ == '__main__':
     parser.add_argument('--test_meta_file', default='metadata/mdvl_mimiccxr_test.csv', type=str)
     parser.add_argument('--img_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/files', type=str)
     parser.add_argument('--text_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports_mdvl', type=str)
-    parser.add_argument('--vqgan_model_path', default='/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/checkpoints/last.ckpt', type=str)
-    parser.add_argument('--vqgan_config_path', default='/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/configs/2021-10-23T11-14-46-project.yaml', type=str)
-    parser.add_argument('--codebook_indices_path', default='/home/edlab/jylee/Scaleup/data/mimiccxr_vqgan1024_res512_codebook_indices.pickle', type=str)
+    parser.add_argument('--vqgan_model_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt', type=str)
+    parser.add_argument('--vqgan_config_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml', type=str)
+    parser.add_argument('--codebook_indices_path', default='/home/edlab/wcshin/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle', type=str)
     parser.add_argument('--max_img_num', default=1, type=int, help='must be less than or equal to target_count')
     parser.add_argument('--max_text_len', default=256, type=int)
     parser.add_argument('--vocab_file', default='BBPE_tokenizer/vocab.json', type=str)
@@ -44,14 +44,14 @@ if __name__ == '__main__':
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
     parser.add_argument('--sav_dir', type=str)
     parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--batch_size', default=8, type=int)
+    parser.add_argument('--batch_size', default=16, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
     parser.add_argument('--weight_decay', default=0.01, type=float, help='weight decay')
     parser.add_argument('--n_epochs', default=1000, type=int)
-    parser.add_argument('--n_gpus', default=2, type=int)
+    parser.add_argument('--n_gpus', default=1, type=int)
     parser.add_argument('--save_top_k', default=5, type=int)
-    parser.add_argument('--fp16', default=True, type=str2bool, help='FP16')
+    parser.add_argument('--fp16', default=False, type=str2bool, help='FP16')
     parser.add_argument('--sharded_ddp', default=False, type=str2bool, help='fairscale sharded ddp')
 
     # model args
@@ -191,7 +191,7 @@ if __name__ == '__main__':
 
     # callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f'/home/edlab/jylee/Scaleup/output/{args.sav_dir}',
+        dirpath=f'/home/edlab/jylee/Scaleup/output/i2t/{args.sav_dir}',
         verbose=True,
         save_last=True,
         filename="{epoch:06}--{val_loss:.2f}",
@@ -205,11 +205,12 @@ if __name__ == '__main__':
     )
 
     trainer_args = {
-        'callbacks': [checkpoint_callback, lr_callback],
+        # 'callbacks': [checkpoint_callback, lr_callback],
+        'callbacks': [lr_callback],
         'max_epochs': args.n_epochs,
         'gpus': args.n_gpus,
         'accelerator': 'ddp',
-        'num_sanity_val_steps': 1,
+        'num_sanity_val_steps': 0,
     }
 
     if args.reload_ckpt_dir:

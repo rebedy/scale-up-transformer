@@ -153,7 +153,7 @@ def linear_attention(q, k, v):  # q, k: [B, global_head, seq_len, nb_features]  
 
 # efficient causal linear attention, created by EPFL
 # TODO: rewrite EPFL's CUDA kernel to do mixed precision and remove half to float conversion and back
-def causal_linear_attention(q, k, v, eps = 1e-6):
+def causal_linear_attention(q, k, v, eps = 1e-6):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
     from fast_transformers.causal_product import CausalDotProduct
     autocast_enabled = torch.is_autocast_enabled()
     is_half = isinstance(q, torch.cuda.HalfTensor)
@@ -172,7 +172,45 @@ def causal_linear_attention(q, k, v, eps = 1e-6):
         out = causal_dot_product_fn(q, k, v)
 
     out = torch.einsum('...nd,...n->...nd', out, D_inv)
+    return out   # -> [B, global_head, seq_len, dim_head]
+
+
+def conditioned_causal_linear_attention_cuda(q, k, v, condition_len, eps=1e-6):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+    from fast_transformers.causal_product import CausalDotProduct
+    autocast_enabled = torch.is_autocast_enabled()
+    is_half = isinstance(q, torch.cuda.HalfTensor)
+    assert not is_half or APEX_AVAILABLE, 'half tensor can only be used if nvidia apex is available'
+    cuda_context = null_context if not autocast_enabled else partial(autocast, enabled = False)
+
+    causal_dot_product_fn = amp.float_function(CausalDotProduct.apply) if is_half else CausalDotProduct.apply
+
+    k_cumsum = k.cumsum(dim=-2) + eps
+    D_inv = 1. / torch.einsum('...nd, ...nd->...n', q, k_cumsum.type_as(q)) #257
+
+    # condition part
+    condition_q = q[:, :, :condition_len]
+    condition_k = k[:, :, :condition_len]
+    condition_v = v[:, :, :condition_len]
+
+    condition_context = torch.einsum('...nd,...ne->...de', condition_k, condition_v)
+    condition_out = torch.einsum('...de,...nd->...ne', condition_context, condition_q)  # [B, global_head, condition_len, dim_head]
+
+
+    with cuda_context():
+        if autocast_enabled:
+            q, k, v = map(lambda t: t.float(), (q, k, v))
+
+        out = causal_dot_product_fn(q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:])  # -> [B, global_head, seq_len-condition_len, dim_head]
+
+    # condition context 더해주기
+    condition_add_out = torch.einsum('...de,...nd->...ne', condition_context, q[:, :, condition_len:])
+    out = out + condition_add_out
+
+    out = torch.cat((condition_out, out), dim=2)
+    out = torch.einsum('...nd,...n->...nd', out, D_inv)
     return out
+
+
 
 # inefficient causal linear attention, without cuda code, for reader's reference
 # not being used
@@ -253,7 +291,7 @@ class FastAttention(nn.Module):
 
         self.causal = causal
         if causal:
-            self.causal_linear_fn = partial(conditioned_causal_linear_attention_noncuda, condition_len=condition_len)
+            self.causal_linear_fn = partial(conditioned_causal_linear_attention_cuda, condition_len=condition_len)
 
     @torch.no_grad()   ## 이 함수는 w들 (phi 함수에서의 w들)을 다시 만들어주는 함수
     def redraw_projection_matrix(self, device):
