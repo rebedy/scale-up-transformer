@@ -68,7 +68,7 @@ class Always(nn.Module):
 def softmax_kernel(data, *, projection_matrix, is_query, normalize_data=True, eps=1e-4, device = None): # projection_matrix: [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal.
     b, h, *_ = data.shape  # data: q 또는 k: [B, global_head, seq_len, dim_head]
 
-    data_normalizer = (data.shape[-1] ** -0.25) if normalize_data else 1.  # NOTE: 왜 ** -0.25이지? ** -0.5가 아니라?  왜 1/sqrt(d)가 아니냐는 말임. 그 이유는, query쪽에서 한 번, key쪽에서 한 번 해줘서 둘을 곱하면 ** -0.5가 됨. 
+    data_normalizer = (data.shape[-1] ** -0.25) if normalize_data else 1.  # NOTE: 왜 ** -0.25이지? ** -0.5가 아니라?  왜 1/sqrt(d)가 아니냐. 그 이유는, query쪽에서 한 번, key쪽에서 한 번 해줘서 둘을 곱하면 ** -0.5가 됨. 
 
     ratio = (projection_matrix.shape[0] ** -0.5)   # paper에서 1/sqrt(m)을 의미하는 것 같음
 
@@ -184,6 +184,7 @@ def causal_linear_attention_noncuda(q, k, v, chunk_size = 128, eps = 1e-6): # q,
         k_cumsum = last_k_cumsum + k.cumsum(dim=-2) # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
 
         D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q) + eps) # -> [B, global_head, seq_len/chunk_size]  논문의 식에서 Q' ((K')T 1L)에 해당. 다만 층위구조.
+        
         context = torch.einsum('...nd,...ne->...nde', k, v)  # -> [B, global_head, seq_len/chunk_size, nb_features ,dim_head] outer product.  논문의 식에서 (K')T V.  다만 같은 seq 위치별로.
         context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
         out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
@@ -194,27 +195,29 @@ def causal_linear_attention_noncuda(q, k, v, chunk_size = 128, eps = 1e-6): # q,
 
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
-def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size = 32, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size =1, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
     condition_q = q[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_k = k[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_v = v[:, :, :condition_len]  # [B, global_head, condition_len, dim_head]
 
-    condition_k_cumsum = condition_k.sum(dim = -2) # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당. 
-    condition_D_inv = 1. / torch.einsum('...nd,...d->...n', condition_q, condition_k_cumsum.type_as(condition_q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
+    condition_k_sum = condition_k.sum(dim = -2) # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당. 
+    condition_D_inv = 1. / torch.einsum('...nd,...d->...n', condition_q, condition_k_sum.type_as(condition_q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
     condition_context = torch.einsum('...nd,...ne->...de', condition_k, condition_v) # -> [B, global_head, nb_features, dim_head]   n에 해당하는 차원(seq_len) 으로 sum됨. 논문의 식에서 (K')T V
     condition_out = torch.einsum('...de,...nd,...n->...ne', condition_context, condition_q, condition_D_inv) # -> [B, global_head, seq_len, dim_head]   # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
     
-    last_k_cumsum = condition_k_cumsum.unsqueeze(2)
+    last_k_cumsum = condition_k_sum.unsqueeze(2)
     last_context_cumsum = condition_context.unsqueeze(2)
     outs = [condition_out]
 
     # chunk화해서 for문 돌리는 이유: 메모리를 좀 더 써서 for문을 적게 돌겠다.
-    for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))): #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
+    for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))): 
+        #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
         k_cumsum = last_k_cumsum + k.cumsum(dim=-2) # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
-
         D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q) + eps) # -> [B, global_head, seq_len/chunk_size]  논문의 식에서 Q' ((K')T 1L)에 해당. 다만 층위구조.
         context = torch.einsum('...nd,...ne->...nde', k, v)  # -> [B, global_head, seq_len/chunk_size, nb_features ,dim_head] outer product.  논문의 식에서 (K')T V.  다만 같은 seq 위치별로.
+        
         context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
+        
         out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
 
         last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요.
@@ -223,6 +226,8 @@ def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_si
 
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
+
+
 def conditioned_causal_linear_attention(q, k, v, condition_len, chunk_size = 32, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
     
     ## image part
@@ -230,25 +235,24 @@ def conditioned_causal_linear_attention(q, k, v, condition_len, chunk_size = 32,
     condition_k = k[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_v = v[:, :, :condition_len]  # [B, global_head, condition_len, dim_head]
 
-    condition_k_cumsum = condition_k.sum(dim = -2)  # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당. 
-    condition_D_inv = 1. / torch.einsum('...nd,...d->...n', condition_q, condition_k_cumsum.type_as(condition_q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
+    condition_k_sum = condition_k.sum(dim = -2)  # -> [B, global_head, nb_features]  논문의 식에서 (K')T 1L 에 해당. 
+    condition_D_inv = 1. / torch.einsum('...nd,...d->...n', condition_q, condition_k_sum.type_as(condition_q))  # [B, global_head, seq_len] 논문의 식에서 Q' ((K')T 1L)에 해당.
+    
     condition_context = torch.einsum('...nd,...ne->...de', condition_k, condition_v) # -> [B, global_head, nb_features, dim_head]   n에 해당하는 차원(seq_len) 으로 sum됨. 논문의 식에서 (K')T V
+    
     condition_out = torch.einsum('...de,...nd,...n->...ne', condition_context, condition_q, condition_D_inv) # -> [B, global_head, seq_len, dim_head]   # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 그리고 row별(query별)로 D_inv값 곱함.
     
-    last_k_cumsum = condition_k_cumsum.unsqueeze(2)
+    last_k_cumsum = condition_k_sum.unsqueeze(2)
     last_context_cumsum = condition_context.unsqueeze(2)
     outs = [condition_out]
     
     ## efficient causal linear attention, created by EPFL
-    
     from fast_transformers.causal_product import CausalDotProduct
-    from fast_transformers.local_product import LocalDotProduct
     autocast_enabled = torch.is_autocast_enabled()
     is_half = isinstance(q, torch.cuda.HalfTensor)
     assert not is_half or APEX_AVAILABLE, 'half tensors can only be used if nvidia apex is available'
     cuda_context = null_context if not autocast_enabled else partial(autocast, enabled = False)
     causal_dot_product_fn = amp.float_function(CausalDotProduct.apply) if is_half else CausalDotProduct.apply
-    local_dot_product_fn = amp.float_function(LocalDotProduct.apply) if is_half else LocalDotProduct.apply
 
     q = q[:, :, condition_len:] #q,k:[B, global_head, seq_len/chunk_size, nb_features]
     k = k[:, :, condition_len:]
@@ -260,13 +264,55 @@ def conditioned_causal_linear_attention(q, k, v, condition_len, chunk_size = 32,
     with cuda_context():
         if autocast_enabled:
             q, k, v = map(lambda t: t.float(), (q, k, v))
-
-        out = causal_dot_product_fn(q, k, v)
+        
+        out = causal_dot_product_fn(q, k, v)  # [B, head, seq_len, nb_features]
 
     out = torch.einsum('...nd,...n->...nd', out, D_inv)
     outs.append(out)
 
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
+
+
+
+def conditioned_causal_linear_attention_cuda(q, k, v, condition_len, eps=1e-6):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+    
+    # image part
+    condition_q = q[:, :, :condition_len]
+    condition_k = k[:, :, :condition_len]
+    condition_v = v[:, :, :condition_len]
+    
+    condition_context = torch.einsum('...nd,...ne->...de', condition_k, condition_v)
+    condition_out = torch.einsum('...de,...nd->...ne', condition_context, condition_q)  # [B, global_head, condition_len, dim_head]
+
+    ## efficient causal linear attention, created by EPFL 
+    from fast_transformers.causal_product import CausalDotProduct
+    autocast_enabled = torch.is_autocast_enabled()
+    is_half = isinstance(q, torch.cuda.HalfTensor)
+    assert not is_half or APEX_AVAILABLE, 'half tensor can only be used if nvidia apex is available'
+    cuda_context = null_context if not autocast_enabled else partial(autocast, enabled = False)
+    causal_dot_product_fn = amp.float_function(CausalDotProduct.apply) if is_half else CausalDotProduct.apply
+    
+    condition_q2 = q[:, :, condition_len:] #q,k:[B, global_head, seq_len/chunk_size, nb_features]
+    condition_k2 = k[:, :, condition_len:]
+    condition_v2 = v[:, :, condition_len:] #  v:[B, global_head, seq_len/chunk_size, dim_head]
+    
+    with cuda_context():
+        if autocast_enabled:
+            condition_q2, condition_k2, condition_v2 = map(lambda t: t.float(), (condition_q2, condition_k2, condition_v2))
+
+        out = causal_dot_product_fn( condition_q2, condition_k2, condition_v2)  # -> [B, global_head, seq_len-condition_len, dim_head]
+
+    # condition_context 
+    condition_add_out = torch.einsum('...de,...nd->...ne', condition_context, condition_q2) # 3 사분면
+    out = out + condition_add_out
+    out = torch.cat((condition_out, out), dim=2)
+    
+    k_cumsum = k.cumsum(dim=-2) + eps
+    D_inv = 1. / torch.einsum('...nd, ...nd->...n', q, k_cumsum.type_as(q))
+
+    out = torch.einsum('...nd,...n->...nd', out, D_inv)
+    
+    return out
 
 
 
@@ -283,7 +329,8 @@ class FastAttention(nn.Module):
 
         self.create_projection = partial(gaussian_orthogonal_random_matrix, nb_rows = self.nb_features, nb_columns = dim_heads, scaling = ortho_scaling)
         # 레이어별로 projection_matrix를 만들어 놓는구나
-        projection_matrix = self.create_projection()  # [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal. ortho_scaling=0이면 가우시안에서 임의로 [nb_features, dim_heads]을 만들고 norm(dim=1)한 값인 [nb_features]를 row별로 곱한다. 
+        projection_matrix = self.create_projection()  
+        # [nb_features, dim_heads]. chunk마다는 orthogonal하지만 다른 chunk의 vector와는 not orthogonal. ortho_scaling=0이면 가우시안에서 임의로 [nb_features, dim_heads]을 만들고 norm(dim=1)한 값인 [nb_features]를 row별로 곱한다. 
         self.register_buffer('projection_matrix', projection_matrix)  # 즉, scaling == 0이면 orthogonal한 random feature들의 길이가 다 다른거고, scaling == 1이면 길이가 qsrt(nb_columns)로 전부 동일한 것(구 표현에 다 있다는 것).
 
         self.generalized_attention = generalized_attention  # 보통 False. NOTE: 이게 의미하는 바가 뭐지?
@@ -302,7 +349,8 @@ class FastAttention(nn.Module):
             if attn_type in ["condi_noncuda", "conditioned_noncuda"]:
                 self.causal_linear_fn = partial(conditioned_causal_linear_attention_noncuda, condition_len=condition_len)
             elif attn_type in ["condi_cuda", "conditioned_cuda"]:
-                self.causal_linear_fn = partial(conditioned_causal_linear_attention, condition_len=condition_len)
+                # self.causal_linear_fn = partial(conditioned_causal_linear_attention, condition_len=condition_len)
+                self.causal_linear_fn = partial(conditioned_causal_linear_attention_cuda, condition_len=condition_len)
     
     @torch.no_grad()   ## 이 함수는 w들 (phi 함수에서의 w들)을 다시 만들어주는 함수
     def redraw_projection_matrix(self, device):

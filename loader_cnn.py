@@ -78,7 +78,7 @@ class CXRDataset(Dataset):
         print("\nnumber of target subject:", len(self.key_list))
         
         data_path = metadata_file[0]
-        self.data = [json.loads(l) for l in open(data_path)] #studyid , matching이 되면? image& text
+        self.ddd = [json.loads(l) for l in open(data_path)] #studyid , matching이 되면? image& text
 
         ## Tokenizer
         self.tokenizer = ByteLevelBPETokenizer(
@@ -95,11 +95,6 @@ class CXRDataset(Dataset):
         self.pad_token_idx = self.tokenizer.token_to_id("[PAD]")
         self.text_vocab_size = self.tokenizer.get_vocab_size()
 
-        # #!# VAE params and load cookbook -> NO 필요!!!
-        self.vae = VQGanVAE(vqgan_model_path, vqgan_config_path)
-        self.img_fmap_size = self.vae.fmap_size
-        self.img_vocab_size = self.vae.num_tokens  # eg. 1024
-        
         # self.img_reso = self.vae.image_size        # eg. 256 or 384 in my case       
         self.img_reso = img_resol  
         # self.img_len = int((self.img_reso / self.vae.f)**2)
@@ -140,62 +135,10 @@ class CXRDataset(Dataset):
         d_img = self.data[i][img]
         input_img = self.preprocess_image(d_img)  #torch.Size([512, 512, 3])
         # study_id = self.key_list[i]
-        
-        "요기가 이미지 들어가는 부분"
-        ### image
-        # img_cls,_ = self.cnn(input_img)
-        
-        # if len(self.dict_by_studyid[study_id]) > self.max_img_num: #if there are 2 slot but got 1 image,
-        #     ## fixed1of2
-        #     if self.under_sample == 'fixed':
-        #         imgs_meta = [self.dict_by_studyid[study_id][0]]
-        #         count = 1
-        #     ## random1of2
-        #     elif self.under_sample == 'random':
-        #         imgs_meta = random.sample(self.dict_by_studyid[study_id], self.max_img_num)
-        #         count = 1
-        # else:
-        #     ## all2of2
-        #     imgs_meta =self.dict_by_studyid[study_id]
-        #     count = self.max_img_num
-            
-        image_indices = 256
-        # image_output = torch.tensor(self.slots)  # tensor[img_len * max_img_num] 2*256
-        # img_paths = ''
-        # for c in range(count):
-        #     dicom_id, subject_id, studyid, ViewPosition, cnt = imgs_meta[c]
-        #     img_path = os.path.join(self.img_root_dir, 'p'+subject_id[:2], 'p'+subject_id, 's'+studyid, dicom_id+'.jpg')
-        #     image_indices = self.indices_dict[dicom_id] # indices list
-        #     image_indices = torch.tensor(image_indices) # [img_len]
-        #     image_output[self.img_len*c:self.img_len*(c+1)] = image_indices
-        #     img_paths += (img_path + '|')
-            
-        #~₩₩₩₩₩₩₩₩₩₩~~~~~~~~~~~~~~~~~~~        
-        ### text
-        # text_path = os.path.join(self.text_root_dir, d_study_id+'.txt')
-        # with open(text_path, 'r') as f:
-        #     data = f.read()
-        # src = data.replace('  ', ' ').replace('  ', ' ').lower()   # Note: 토크나이저가 lower text에서 학습됐음
 
         ids_list = self.tokenizer.encode(d_txt).ids  # len: max_text_len
         text_output = torch.tensor(ids_list)  # tensor[max_text_len]
-        ### mask
-        # img_mask = torch.full_like(image_output,  1.)
-        # img_mask = img_mask.float().masked_fill(img_mask == 1, float('-inf')).masked_fill(img_mask == 0, float(0.0))
-        # target_mask = self.make_std_mask(text_output, self.pad_token_idx)
-        # target_mask = target_mask.float().masked_fill(target_mask == 1, float('-inf')).masked_fill(target_mask == 0, float(0.0))
-        # img_mask = torch.full((image_output.shape[0], image_output.shape[0]), True)
-        # target_mask = self.make_std_mask(text_output, self.pad_token_idx)
-        """
-        torch.Size([256])
-        torch.Size([256])
-        torch.Size([256, 256])
-        torch.Size([256, 256])
-        """
-        # print(image_output)
-        # print(text_output)
-        # print(img_mask[1,...])
-        # print(target_mask[1,...])
+
         
         return {
             'images':input_img,      # input b, 512, 512, 3
