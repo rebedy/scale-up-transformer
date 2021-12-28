@@ -146,3 +146,4 @@ config/
 obw_*
 trembl_*
 requirements2.txt
+_past/

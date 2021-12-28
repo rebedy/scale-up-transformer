@@ -69,14 +69,14 @@ class PerformerLightning_i2t(pl.LightningModule):
             }
         return output
     
-    def training_step_end(self, training_step_outputs, *args, **kwargs):
-        if self.trainer.is_global_zero:
-            if training_step_outputs["batch_idx"] == 300:
-                print("\ntime ", round(training_step_outputs["time"],3))
-                print("peak_mem ", round(training_step_outputs["peak_mem"],3))
-            else:
-                pass
-        return training_step_outputs
+    # def training_step_end(self, training_step_outputs, *args, **kwargs):
+    #     if self.trainer.is_global_zero:
+    #         if training_step_outputs["batch_idx"] == 300:
+    #             print("\ntime ", round(training_step_outputs["time"],3))
+    #             print("peak_mem ", round(training_step_outputs["peak_mem"],3))
+    #         else:
+    #             pass
+    #     return training_step_outputs
                 
         # def training_epoch_end(self, training_step_outputs):
         #     gathered_outputs = self.all_gather(training_step_outputs)
@@ -467,14 +467,14 @@ class TransformerLightning_i2t(pl.LightningModule):
             }
         return output
     
-    def training_step_end(self, training_step_outputs, *args, **kwargs):
-        if self.trainer.is_global_zero:
-            if training_step_outputs["batch_idx"] == 300:
-                print("\ntime ", round(training_step_outputs["time"],3))
-                print("peak_mem ", round(training_step_outputs["peak_mem"],3))
-            else:
-                pass
-        return training_step_outputs
+    # def training_step_end(self, training_step_outputs, *args, **kwargs):
+    #     if self.trainer.is_global_zero:
+    #         if training_step_outputs["batch_idx"] == 300:
+    #             print("\ntime ", round(training_step_outputs["time"],3))
+    #             print("peak_mem ", round(training_step_outputs["peak_mem"],3))
+    #         else:
+    #             pass
+    #     return training_step_outputs
         
     def validation_step(self, batch, batch_idx):
         img_paths, study_ids, images, texts = batch['img_paths'], batch['study_id'], batch['images'], batch['texts']

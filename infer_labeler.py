@@ -288,7 +288,7 @@ def get_label_accuracy_v4(hypothesis, reference):
 
 if __name__ == "__main__":
     start = datetime.datetime.now()
-    print("\n")
+    print("\n", start, "\n")
     
     """Initialize argument parser."""
     # Input report parameters.
@@ -313,8 +313,9 @@ if __name__ == "__main__":
     args.unmention_phrases_dir = Path(args.unmention_phrases_dir)
 
     
+    
     ######### ! #########
-    base_path = "metadata/2of2/trans_gen/"
+    base_path = "metadata/mdvl_finetune_only/"
     # args.reports_path = glob.glob(base_path+"test_*.csv")[-1]
     
     ##!## Chexpert label for the generated reports.
@@ -324,12 +325,14 @@ if __name__ == "__main__":
         # usecolumn = 0
         # labeled_hypothesis = label(args, usecolumn=usecolumn, output_path=hypothesis_path)
         labeled_hypothesis = label(args, output_path=hypothesis_path)
+
         print("Generated text labeling DONE!")
+        print("\n",   args.reports_path)
+        print("\nThe labeling hypothesis took for ", datetime.datetime.now() -start, "\n\n")        
         exit()
-    else:
-        pass
+        
+    else: pass
         # labeled_hypothesis = glob.glob(base_path+"labeled_GEN_*.csv")[-1]
-    print("\nThe labeling hypothesis took for ", datetime.datetime.now() -start, "\n\n")
     
     
     ##!## Chexpert label for the prime reports.
@@ -339,24 +342,23 @@ if __name__ == "__main__":
         # usecolumn = 1
         # labeled_reference = label(args, usecolumn, output_path=reference_path)
         labeled_reference = label(args, output_path=reference_path)
-        # print("Ground truth labeling DONE!")
-        # exit()
-    else:
-        pass
+        
+        print("Ground truth text labeling DONE!")
+        print("\n",   args.reports_path)
+        print("\nThe labeling reference took for ", datetime.datetime.now() -start, "\n\n")
+        
+    else: pass
         # labeled_reference = glob.glob(base_path+"labeled_GT_*.csv")[-1]
         
         
-        
-    print("\n",   args.reports_path)
-    print("\nThe labeling reference took for ", datetime.datetime.now() -start, "\n\n")
-
-    ######
+    
+    ######### ! #########
     metric_pos1, metric_0, metric_neg1, metric_all, accuracy_all_list, precision_all_list, recall_all_list, f1_all_list = get_label_accuracy_v4(hypothesis = hypothesis_path, reference = reference_path)
     print(metric_all)
-    print("(micro) accuracy, precision, recall, f1, auroc for ALL : {}, {}, {}, {}".format(round(metric_all[0], 3), round(metric_all[1], 3), round(metric_all[2], 3), round(metric_all[3], 3), round(metric_all[4], 3)))
-    print("(micro) accuracy, precision, recall, f1, auroc for pos1: {}, {}, {}, {}, {}".format(round(metric_pos1[0], 3), round(metric_pos1[1], 3), round(metric_pos1[2], 3), round(metric_pos1[3], 3), round(metric_pos1[4], 3)))
-    print("(micro) accuracy, precision, recall, f1, auroc for zero: {}, {}, {}, {}, {}".format(round(metric_0[0], 3), round(metric_0[1], 3), round(metric_0[2], 3), round(metric_0[3], 3), round(metric_pos1[4], 3)))
-    print("(micro) accuracy, precision, recall, f1, auroc for neg1: {}, {}, {}, {}, {}".format(round(metric_neg1[0], 3), round(metric_neg1[1], 3), round(metric_neg1[2], 3), round(metric_neg1[3], 3), round(metric_pos1[4], 3)))
+    print("(micro) accuracy, precision, recall, f1,  for ALL : {}, {}, {}, {}".format(round(metric_all[0], 3), round(metric_all[1], 3), round(metric_all[2], 3), round(metric_all[3], 3)))#, round(metric_all[4], 3)))
+    print("(micro) accuracy, precision, recall, f1,  for pos1: {}, {}, {}, {}".format(round(metric_pos1[0], 3), round(metric_pos1[1], 3), round(metric_pos1[2], 3), round(metric_pos1[3], 3)))#, round(metric_pos1[4], 3)))
+    print("(micro) accuracy, precision, recall, f1,  for zero: {}, {}, {}, {}".format(round(metric_0[0], 3), round(metric_0[1], 3), round(metric_0[2], 3), round(metric_0[3], 3)))#, round(metric_pos1[4], 3)))
+    print("(micro) accuracy, precision, recall, f1,  for neg1: {}, {}, {}, {}".format(round(metric_neg1[0], 3), round(metric_neg1[1], 3), round(metric_neg1[2], 3), round(metric_neg1[3], 3)))#, round(metric_pos1[4], 3)))
     # print("(micro) auroc_multi_ovr", auroc_multi_ovr)
     
     ######
@@ -370,7 +372,6 @@ if __name__ == "__main__":
     print("neg_recall",round(neg_recall,3))
     print("\namb_precision",round(amb_precision,3))
     print("amb_recall",round(amb_recall,3))
-
 
 
 # wandb.init(project='ScaleUpTransformers_'+args.exp_name, dir=args.infer_save,  config=args)
