@@ -1,4 +1,3 @@
-import time
 import torch
 import torch.nn as nn
 from operator import itemgetter
@@ -33,8 +32,6 @@ class Deterministic(nn.Module):
         if torch.cuda._initialized:   # True
             self.cuda_in_fwd = True
             self.gpu_devices, self.gpu_states = get_device_states(*args)  # [0], [tensor([255, 255, 255...rch.uint8)] 길이 816
-            # print(self.gpu_devices, self.gpu_states)
-            # input("self.gpu_devices, self.gpu_states")
 
     def forward(self, *args, record_rng = False, set_rng = False, **kwargs):  # args에 x[B, seq_len, dim]가 담겨있음. record_rng에 self.training를 받음
         if record_rng:
@@ -60,7 +57,6 @@ class ReversibleBlock(nn.Module):
         super().__init__()
         self.f = Deterministic(f)
         self.g = Deterministic(g)
-        # Reformer는 RevNet 블록 내부의 어텐션레이어와 feed-forward 레이어를 결합. F는 어텐션 레이어, G는 feed-forward 레이어로 만들어 Transformer의 형태 띔.
 
     def forward(self, x, f_args = {}, g_args = {}): # x: [B, seq_len, dim*2]  f_args: {'pos_emb': tensor, 'mask': tensor}  g_args: {}
         x1, x2 = torch.chunk(x, 2, dim=2)  # [B, seq_len, dim]  x1, x2는 동일함
@@ -115,14 +111,11 @@ class ReversibleBlock(nn.Module):
 class _ReversibleFunction(Function): # PYTORCH: DEFINING NEW AUTOGRAD FUNCTION 참고하기
     @staticmethod  # @staticmethod: 인스턴스를 만들지 않아도 class의 메서드를 바로 실행할 수 있다
     def forward(ctx, x, blocks, args): # In the forward pass, we receive a Tensor containing the input and return a Tensor containing the output. ctx is a context object that can be used to stash information for backward computation. You can cache arbitrary objects for use in the backward pass using the ctx.save_for_backward method.
-        # s=time.time()
         ctx.args = args   # args: [({...}, {}), ({...}, {}),...]  ({f의 args}, {g의 args})
         for block, kwarg in zip(blocks, args):
             x = block(x, **kwarg)  # x: [B, seq_len, dim*2] -> [B, seq_len, dim*2] 근데 with torch.no_grad()으로 게산됨. 왜냐면 이 부분에 대한 gradient는 직접 구할 것이기에.
         ctx.y = x.detach()   # 아예 computational graph에서 떨어진 tensor를 y로 저장.
         ctx.blocks = blocks
-        # print(time.time()-s)
-        # input("_ReversibleFunction")
         return x
 
     @staticmethod
@@ -156,7 +149,6 @@ class ReversibleSequence(nn.Module):
         self.blocks = nn.ModuleList([ReversibleBlock(f=f, g=g) for f, g in blocks]) # eg.  f: SelfAttention  g: Chunk(FeedForward)
 
     def forward(self, x, **kwargs):   # x: [B, seq_len, dim],   kwargs = {'pos_emb': [1, seq_len, head_dim], 'mask': [1, seq_len]}
-        
         x = torch.cat([x, x], dim=-1) # -> [B, seq_len, 2*dim]
 
         blocks = self.blocks

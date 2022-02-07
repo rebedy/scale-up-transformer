@@ -41,7 +41,7 @@ def top_k_sampling(logits, thres = 0.9):
     return probs
 
 
-def top_k_top_p_filtering(logits, top_k=0, top_p= 0.9, thres=None, filter_value = -float("Inf"), min_tokens_to_keep = 1,):
+def top_k_top_p_filtering(logits, top_k=0, top_p= 0.9, filter_value = -float("Inf"), min_tokens_to_keep = 1,):
     """ 
     Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
         Args:

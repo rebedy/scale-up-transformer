@@ -1,22 +1,9 @@
 import argparse
 from contextlib import contextmanager
 import random
-import time
 import numpy as np
 import torch
 
-# In 'run_worker'
-def print_with_rank(rank, msg):
-    print('[RANK {}]: {}'.format(rank, msg))
-
-def logging_time(original_fn):
-    def wrapper_fn(*args, **kwargs):
-        start_time = time.time()
-        result = original_fn(*args, **kwargs)
-        end_time = time.time()
-        print("WorkingTime[{}]: {} sec".format(original_fn.__name__, end_time-start_time))
-        return result
-    return wrapper_fn
 
 ##### helper function #####
 def str2bool(input_):
@@ -36,9 +23,7 @@ def random_seed_all(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    
 
     
 # helpers for performer generator
