@@ -11,15 +11,9 @@ from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
-<<<<<<< HEAD:jylee/main_t2i.py
 from loader import CXRDataset
 from datamodule import CXRDataModule
 from plmodel import PerformerLightning_t2i
-=======
-from loader_protein import TremblDataset
-from datamodule import CXRDataModule, ProteinDataModule
-from plmodel import PerformerLightning_i2t, TransformerLightning_i2t, PerformerLightning_protein, TransformerLightning_protein
->>>>>>> main:jylee/main_protein.py
 from pytorch_lightning.plugins import DDPPlugin
 from utils import str2bool
 
@@ -35,8 +29,8 @@ if __name__ == '__main__':
     parser.add_argument('--test_meta_file', default='metadata/mdvl_mimiccxr_test.csv', type=str)
     parser.add_argument('--img_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/files', type=str)
     parser.add_argument('--text_root_dir', default='/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports_mdvl', type=str)
-    parser.add_argument('--vqgan_model_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt', type=str)
-    parser.add_argument('--vqgan_config_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml', type=str)
+    parser.add_argument('--vqgan_model_path', default='/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/checkpoints/last.ckpt', type=str)
+    parser.add_argument('--vqgan_config_path', default='/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/configs/2021-12-17T08-58-54-project.yaml', type=str)
     parser.add_argument('--codebook_indices_path', default='/home/edlab/wcshin/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle', type=str)
     parser.add_argument('--max_img_num', default=1, type=int, help='must be less than or equal to target_count')
     parser.add_argument('--max_text_len', default=256, type=int)
@@ -135,7 +129,7 @@ if __name__ == '__main__':
 
     # add
     args.num_tokens = train_ds.text_vocab_size  # NOTE: text vocab size
-    args.num_img_tokens = train_ds.img_vocab_size + train_ds.max_img_num  # NOTE: img vocab size + num img pad   ## 왜 곱하기가 아니라 더하기지?
+    args.num_img_tokens = train_ds.img_vocab_size + train_ds.max_img_num  # NOTE: img vocab size + num img pad
     args.max_seq_len = train_ds.img_len * train_ds.max_img_num + train_ds.max_text_len
     args.max_img_num = train_ds.max_img_num
     args.condition_len = args.max_text_len
@@ -166,12 +160,12 @@ if __name__ == '__main__':
         'kernel_fn': nn.ReLU(),  # used only when args.generalized_attention = True
         'use_scalenorm': args.use_scalenorm,
         'use_rezero': args.use_rezero,
-        'tie_embed': args.tie_embed,  ## TODO: 이게 뭐지?
+        'tie_embed': args.tie_embed,
         'rotary_position_emb': args.rotary_position_emb,
         'img_fmap_size': args.img_fmap_size,
         # 'FAVOR': args.FAVOR,
     }
-
+    ## 여기까지는 i2t와 동일
     if not args.transformer:
         model = PerformerLightning_t2i(
             lr=args.lr,
@@ -210,8 +204,6 @@ if __name__ == '__main__':
 
     # instrument experiment with W&B
     wandb_logger = WandbLogger(entity='scaleup', project='Transformer', log_model=False, config=args)
-
-    ## TODO: 이중에서 나는 뭘 하면 되는 거지?
 
     if (args.fp16 == True and args.sharded_ddp == True):
         trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded', gradient_clip_val=0.5)

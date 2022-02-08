@@ -897,7 +897,7 @@ class PerformerLM_i2t(nn.Module):
                 text_seq[row, idx+1:] = pad_token_idx
         return text_seq
 
-
+## T2I 수행하는 곳
 class PerformerLM_t2i(nn.Module):
     def __init__(
             self,
@@ -945,9 +945,9 @@ class PerformerLM_t2i(nn.Module):
         local_attn_heads = cast_tuple(local_attn_heads)
         self.dim = dim
 
-        # img
+        # img embedding
         self.image_token_emb = nn.Embedding(num_img_tokens, dim)
-        self.image_pos_emb = AxialPositionalEmbedding(dim=dim, axial_shape=(img_fmap_size, img_fmap_size))  # 여기에서 에러가 나올 수 있겠다
+        self.image_pos_emb = AxialPositionalEmbedding(dim=dim, axial_shape=(img_fmap_size, img_fmap_size))
 
         # text
         self.token_emb = nn.Embedding(num_tokens, dim)
@@ -990,6 +990,7 @@ class PerformerLM_t2i(nn.Module):
 
         # image
         x_img = self.image_token_emb(images)  # -> [B, tot_img_len, dim]
+        # 이미지 여러장을 생성하고 싶은 경우, 각 이미지마다 동일한 positional embedding을 더해줘야 한다.
         outs = []
         for x_img_slot in x_img.chunk(self.max_img_num, dim=1):   # x_img_slot: [B, img_len, dim]
             out = self.image_pos_emb(x_img_slot)
@@ -997,8 +998,7 @@ class PerformerLM_t2i(nn.Module):
         x_img_pos = torch.cat(outs, dim=1)
         x_img += x_img_pos
 
-
-        # merge
+        # merge, text + image 순으로 merge
         x = torch.cat((x_text, x_img), dim=1)
         x = self.dropout(x)
 
@@ -1016,7 +1016,7 @@ class PerformerLM_t2i(nn.Module):
 
         return x @ self.image_token_emb.weight.t()   # weight tieing 했을 시
 
-
+    # inference할 때 image 생성하기
     @torch.no_grad()
     @eval_decorator
     def generate_image(self,
@@ -1039,8 +1039,7 @@ class PerformerLM_t2i(nn.Module):
 
         out = texts
 
-
-
+        # for 문 돌리면서 image token 하나씩 생성
         for cur_len in range(txt_seq_len, total_len):
             text, image = out[:, :txt_seq_len], out[:, txt_seq_len:]
 
@@ -1052,198 +1051,5 @@ class PerformerLM_t2i(nn.Module):
 
             out = torch.cat((out, sample), dim=-1)
 
-        image_seq = out[:, txt_seq_len:]
+        image_seq = out[:, txt_seq_len:]  # text 이후에 있는 생성된 이미지 토큰만 가져오기
         return image_seq
-
-
-
-
-
-
-"""
-## ProteinPerformer
-class PerformerLM_Protein(nn.Module):
-    def __init__(self,
-                 max_seq_len,
-                 dim,
-                 depth,
-                 heads,
-                 dim_head=64,
-                 local_attn_heads=0,
-                 local_window_size=256,
-                 causal=False,
-                 condition_len=0,
-                 ff_mult=1,
-                 nb_features=None,
-                 feature_redraw_interval = 1000,
-                 reversible=False,
-                 ff_chunks=1,
-                 ff_glu = False,
-                 emb_dropout = 0.,
-                 ff_dropout = 0.,
-                 attn_dropout = 0.,
-                 generalized_attention = False,
-                 kernel_fn = nn.ReLU(),
-                 use_scalenorm = False,
-                 use_rezero = False,
-                 cross_attend = False,
-                 no_projection = False,
-                 tie_embed = False,
-                 rotary_position_emb = False,
-                 axial_position_emb = False,
-                 axial_position_shape = False,
-                 auto_check_redraw = True,
-                 qkv_bias = False,
-                 attn_out_bias = False,
-                 ):
-        super().__init__()
-        self.max_seq_len = max_seq_len
-        local_attn_heads = cast_tuple(local_attn_heads)
-        self.dim = dim
-
-        # input embedding
-        self.token_emb = nn.Embedding(30, dim)
-        self.layer_pos_emb = Always(None)
-
-        self.dropout = nn.Dropout(emb_dropout)
-
-        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult,
-                                   nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero,
-                                   ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
-        self.norm = nn.LayerNorm(dim)
-        self.to_out = nn.Linear(dim, 30) if not tie_embed else None
-
-    def check_redraw_projections(self):
-        self.performer.check_redraw_projections()
-
-    def fix_projection_matrices_(self):
-        self.performer.fix_projection_matrices_()
-
-    def forward(self, x, return_encodings = False, **kwargs):
-        b, n, device = *x.shape, x.device   # b: batch_size, n: x의 seq_len
-        assert n <= self.max_seq_len, f'sequence length {n} must be less than the max sequence length {self.max_seq_len}'
-
-        # token embedding
-        x = self.token_emb(x)  # [B, seq_len] -> [B, seq_len, dim]
-        x = self.dropout(x)    # [B, seq_len, dim]
-
-        # Performer layers
-        layer_pos_emb = self.layer_pos_emb(x)
-        x = self.performer(x, pos_emb = layer_pos_emb, **kwargs)
-
-        # norm
-        x = self.norm(x)
-
-        return self.to_out(x)   # [B, seq_len, num_tokens]
-
-    @torch.no_grad()
-    @eval_decorator
-    def generate_proteins(self,
-                          x,
-                          filter_logits_fn = 'top_k',
-                          filter_thres = 0.9,
-                          temperature = 1.
-                          ):
-        if filter_logits_fn == 'top_k':
-            filter_logits_fn = top_k
-        elif filter_logits_fn == 'top_p':
-            filter_logits_fn = top_p
-        else:
-            raise ValueError('filter_logits_fn must be in (top_k, top_p)')
-
-
-        out = x[:, 0].unsqueeze(-1)   # (B, 1)  첫번째 protein sequence만 제공
-
-        for cur_len in range(self.max_seq_len-1):
-            logits = self(out)[:, -1, :]  # -> [B, num_text_token]
-            filtered_logits = filter_logits_fn(logits, thres=filter_thres)
-            probs = F.softmax(filtered_logits / temperature, dim=-1)  # [B, num_text_tokens]
-            sample = torch.multinomial(probs, 1)  # [B, 1]
-
-            out = torch.cat((out, sample), dim=-1)
-
-        return out
-
-
-## OneBillionWordsPerformer
-class PerformerLM_OneBillionWords(nn.Module):
-    def __init__(self,
-                 max_seq_len,
-                 dim,
-                 depth,
-                 heads,
-                 dim_head=64,
-                 local_attn_heads=0,
-                 local_window_size=256,
-                 causal=False,
-                 condition_len=0,
-                 ff_mult=4,
-                 nb_features=None,
-                 feature_redraw_interval=1000,
-                 reversible=False,
-                 ff_chunks=1,
-                 ff_glu = False,
-                 emb_dropout = 0.,
-                 ff_dropout = 0.,
-                 attn_dropout = 0.,
-                 generalized_attention = False,
-                 kernel_fn = nn.ReLU(),
-                 use_scalenorm = False,
-                 use_rezero = False,
-                 cross_attend = False,
-                 no_projection = False,
-                 tie_embed = False,
-                 rotary_position_emb = False,
-                 axial_position_emb = False,
-                 axial_position_shape = False,
-                 auto_check_redraw = True,
-                 qkv_bias = False,
-                 attn_out_bias = False,
-                 ):
-        super().__init__()
-        self.max_seq_len = max_seq_len
-        local_attn_heads = cast_tuple(local_attn_heads)
-        self.dim = dim
-
-        # input embedding
-        self.token_emb = nn.Embedding(30522, dim)
-        self.positional_embedding = nn.Embedding(max_seq_len, dim)
-        self.layer_pos_emb = Always(None)
-
-        self.dropout = nn.Dropout(emb_dropout)
-
-        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult,
-                                   nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero,
-                                   ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
-        self.norm = nn.LayerNorm(dim)
-        self.to_out = nn.Linear(dim, 30522) if not tie_embed else None
-
-    def check_redraw_projections(self):
-        self.performer.check_redraw_projections()
-
-    def fix_projection_matrices_(self):
-        self.performer.fix_projection_matrices_()
-
-    def forward(self, x, return_encodings = False, **kwargs):
-        b, n, device = *x.shape, x.device   # b: batch_size, n: x의 seq_len
-        assert n <= self.max_seq_len, f'sequence length {n} must be less than the max sequence length {self.max_seq_len}'
-
-        # token embedding
-        x = self.token_emb(x)  # [B, seq_len] -> [B, seq_len, dim]
-        # positional embedding
-        seq_len = torch.LongTensor([i for i in range(self.max_seq_len)]).cuda()
-        seq_len = self.positional_embedding(seq_len)
-        x = x + seq_len
-
-        x = self.dropout(x)    # [B, seq_len, dim]
-
-        # Performer layers
-        layer_pos_emb = self.layer_pos_emb(x)
-        x = self.performer(x, pos_emb = layer_pos_emb, **kwargs)
-
-        # norm
-        x = self.norm(x)
-
-        return self.to_out(x)   # [B, seq_len, num_tokens]
-
-"""

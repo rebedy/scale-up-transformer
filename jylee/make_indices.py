@@ -53,5 +53,6 @@ for path in tqdm(img_paths):
     indices_list = encoded.squeeze().cpu().detach().tolist()
     dict_by_dicomid[dicom_id] = indices_list
 
-with open('/home/edlab/jylee/Scaleup/data/mimiccxr_vqgan1024_res512_codebook_indices.pickle', 'wb') as f:
+### 이 부분만 바꿔서 원하는 위치에 code indice 저장하기
+with open('/home/edlab/jylee/Scaleup/data/mimiccxr_vqgan1024_res512_codebook_indices.pickle', 'wb') as f:   
     pickle.dump(dict_by_dicomid, f)

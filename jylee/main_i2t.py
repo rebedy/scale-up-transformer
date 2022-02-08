@@ -20,7 +20,7 @@ from utils import str2bool
 if __name__ == '__main__':
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
 
     parser = argparse.ArgumentParser()
     # dataset args
@@ -49,7 +49,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
     parser.add_argument('--weight_decay', default=0.01, type=float, help='weight decay')
     parser.add_argument('--n_epochs', default=1000, type=int)
-    parser.add_argument('--n_gpus', default=1, type=int)
+    parser.add_argument('--n_gpus', default=2, type=int)
     parser.add_argument('--save_top_k', default=5, type=int)
     parser.add_argument('--fp16', default=False, type=str2bool, help='FP16')
     parser.add_argument('--sharded_ddp', default=False, type=str2bool, help='fairscale sharded ddp')

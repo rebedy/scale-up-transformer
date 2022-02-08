@@ -362,16 +362,16 @@ class PerformerLightning_i2t(pl.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
         # TODO: 추후 scheduler 변경도 고려해보기
 
-
-# Performer t2i
+#################
+# Performer t2i #
+#################
 class PerformerLightning_t2i(pl.LightningModule):
-    def __init__(self, lr=5e-4, weight_decay=0.01, vae=None, sav_dir='./', **kargs):
+    def __init__(self, lr=5e-4, weight_decay=0.01, sav_dir='./', **kargs):
         super().__init__()
         self.kargs = kargs
         self.performerLM_t2i = PerformerLM_t2i(**kargs)
         self.weight_decay = weight_decay
         self.lr = lr
-        # self.vae = vae
         self.sav_dir = sav_dir
         self.save_hyperparameters()
 
@@ -414,38 +414,14 @@ class PerformerLightning_t2i(pl.LightningModule):
         return output
 
     def validation_epoch_end(self, validation_step_outputs):
-        gathered_validation_step_outputs = self.all_gather(validation_step_outputs)
+        gathered_validation_step_outputs = self.all_gather(validation_step_outputs)  # validation step에서 나온 애들 모아 보기
 
-        total_val_loss = torch.mean(gathered_validation_step_outputs[0]['val_loss'])
+        total_val_loss = torch.mean(gathered_validation_step_outputs[0]['val_loss'])  # validation loss의 mean 값 구하기
         self.log('val_loss', total_val_loss)
 
         if self.global_rank == 0:
-            # GT_image = self.vae.decode(GT_image)
-            # gen_image = self.vae.decode(gen_image)
-            #
-            # log = {'GT_image': wandb.Image(GT_image),
-            #        'GEN_image': wandb.Image(gen_image)}
-            #
-            # self.logger.experiment.log(log)
-            #
             dirpath = f'/home/edlab/jylee/Scaleup/output/t2i/{self.sav_dir}'
-            torch.save(gathered_validation_step_outputs, os.path.join(dirpath, 'eval_output.pt'))
-
-
-
-        # sample the very first image
-        # GT_image = gathered_validation_step_outputs[0]['GT_image'][0, 0, :]  # 첫번째 GPU의 첫번째 batch
-        # gen_image = gathered_validation_step_outputs[0]['gen_image'][0, 0, :]
-        #
-        # if self.global_rank == 0:
-        #     GT_image = self.vae.decode(GT_image.unsqueeze(0))
-        #     gen_image = self.vae.decode(gen_image.unsqueeze(0))
-        #
-        #     log = {'GT_image': wandb.Image(GT_image),
-        #            'GEN_image': wandb.Image(gen_image)}
-        #
-        #     self.logger.experiment.log(log)
-
+            torch.save(gathered_validation_step_outputs, os.path.join(dirpath, 'eval_output.pt')) # 만들어진 이미지 저장하기
 
     def test_step(self, batch, batch_idx):
         images, texts = batch['images'], batch['texts']
@@ -470,26 +446,14 @@ class PerformerLightning_t2i(pl.LightningModule):
         return output
 
     def test_epoch_end(self, test_step_outputs):
-        gathered_test_step_outputs = self.all_gather(test_step_outputs)
+        gathered_test_step_outputs = self.all_gather(test_step_outputs)   # test output 결과 모아보기
 
         total_test_loss = torch.mean(gathered_test_step_outputs[0]['test_loss'])
-        self.log('test_loss', total_test_loss)
-
-        # sample the very first image
-        GT_image = gathered_test_step_outputs[0]['GT_image'][0, 0, :]  # 첫번째 GPU의 첫번째 batch
-        gen_image = gathered_test_step_outputs[0]['gen_image'][0, 0, :]
+        self.log('test_loss', total_test_loss)                            # 최종 test loss 계산하기
 
         if self.global_rank == 0:
-            # GT_image = self.vae.decode(GT_image)
-            # gen_image = self.vae.decode(gen_image)
-            #
-            # log = {'GT_image': wandb.Image(GT_image),
-            #        'GEN_image': wandb.Image(gen_image)}
-            #
-            # self.logger.experiment.log(log)
-            #
             dirpath = f'/home/edlab/jylee/Scaleup/output/t2i/{self.sav_dir}'
-            torch.save(gathered_test_step_outputs, os.path.join(dirpath, 'test_output.pt'))
+            torch.save(gathered_test_step_outputs, os.path.join(dirpath, 'test_output.pt'))  # test output 결과 저장하기
 
 
     def configure_optimizers(self):
