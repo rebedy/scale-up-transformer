@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.cuda.amp import autocast
 from einops import rearrange, repeat
+import pdb
 
 from functools import partial
 from contextlib import contextmanager
@@ -152,7 +153,7 @@ def linear_attention(q, k, v):  # q, k: [B, global_head, seq_len, nb_features]  
 
 # efficient causal linear attention, created by EPFL
 # TODO: rewrite EPFL's CUDA kernel to do mixed precision and remove half to float conversion and back
-def causal_linear_attention(q, k, v, eps = 1e-6):
+def causal_linear_attention(q, k, v, eps = 1e-6):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
     from fast_transformers.causal_product import CausalDotProduct
     autocast_enabled = torch.is_autocast_enabled()
     is_half = isinstance(q, torch.cuda.HalfTensor)
@@ -171,7 +172,45 @@ def causal_linear_attention(q, k, v, eps = 1e-6):
         out = causal_dot_product_fn(q, k, v)
 
     out = torch.einsum('...nd,...n->...nd', out, D_inv)
+    return out   # -> [B, global_head, seq_len, dim_head]
+
+
+def conditioned_causal_linear_attention_cuda(q, k, v, condition_len, eps=1e-6):  # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+    from fast_transformers.causal_product import CausalDotProduct
+    autocast_enabled = torch.is_autocast_enabled()
+    is_half = isinstance(q, torch.cuda.HalfTensor)
+    assert not is_half or APEX_AVAILABLE, 'half tensor can only be used if nvidia apex is available'
+    cuda_context = null_context if not autocast_enabled else partial(autocast, enabled = False)
+
+    causal_dot_product_fn = amp.float_function(CausalDotProduct.apply) if is_half else CausalDotProduct.apply
+
+    k_cumsum = k.cumsum(dim=-2) + eps
+    D_inv = 1. / torch.einsum('...nd, ...nd->...n', q, k_cumsum.type_as(q)) #257
+
+    # condition part
+    condition_q = q[:, :, :condition_len]
+    condition_k = k[:, :, :condition_len]
+    condition_v = v[:, :, :condition_len]
+
+    condition_context = torch.einsum('...nd,...ne->...de', condition_k, condition_v)
+    condition_out = torch.einsum('...de,...nd->...ne', condition_context, condition_q)  # [B, global_head, condition_len, dim_head]
+
+
+    with cuda_context():
+        if autocast_enabled:
+            q, k, v = map(lambda t: t.float(), (q, k, v))
+
+        out = causal_dot_product_fn(q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:])  # -> [B, global_head, seq_len-condition_len, dim_head]
+
+    # condition context 더해주기
+    condition_add_out = torch.einsum('...de,...nd->...ne', condition_context, q[:, :, condition_len:])
+    out = out + condition_add_out
+
+    out = torch.cat((condition_out, out), dim=2)
+    out = torch.einsum('...nd,...n->...nd', out, D_inv)
     return out
+
+
 
 # inefficient causal linear attention, without cuda code, for reader's reference
 # not being used
@@ -194,7 +233,7 @@ def causal_linear_attention_noncuda(q, k, v, chunk_size = 128, eps = 1e-6): # q,
 
     return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
-def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size = 512, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head]
+def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_size = 32, eps = 1e-6): # q, k: [B, global_head, seq_len, nb_features]  v: [B, global_head, seq_len, dim_head] # chunk_size=32일때가 제일 좋음
     condition_q = q[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_k = k[:, :, :condition_len]  # [B, global_head, condition_len, nb_features]
     condition_v = v[:, :, :condition_len]  # [B, global_head, condition_len, dim_head]
@@ -208,20 +247,25 @@ def conditioned_causal_linear_attention_noncuda(q, k, v, condition_len, chunk_si
     last_context_cumsum = condition_context.unsqueeze(2)
     outs = [condition_out]
 
-    # chunk화해서 for문 돌리는 이유: 메모리를 좀 더 써서 for문을 적게 돌겠다.
-    for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))): #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
-        k_cumsum = last_k_cumsum + k.cumsum(dim=-2) # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
 
-        D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q) + eps) # -> [B, global_head, seq_len/chunk_size]  논문의 식에서 Q' ((K')T 1L)에 해당. 다만 층위구조.
-        context = torch.einsum('...nd,...ne->...nde', k, v)  # -> [B, global_head, seq_len/chunk_size, nb_features ,dim_head] outer product.  논문의 식에서 (K')T V.  다만 같은 seq 위치별로.
-        context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
-        out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
+    if q[:, :, condition_len:].size(2) == 0:
+        return condition_out     # generate image에서 첫 토큰 generation을 위함
 
-        last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요.
-        last_context_cumsum = context_cumsum[:, :, -1:]  # [B, global_head, 1, nb_features ,dim_head]  # 이건 다음 for문(다음 chunk)에서 context_cumsum를 구하기 위해 필요.
-        outs.append(out)
+    else:
+        # chunk화해서 for문 돌리는 이유: 메모리를 좀 더 써서 for문을 적게 돌겠다.
+        for q, k, v in zip(*map(lambda t: t.chunk(chunk_size, dim = -2), (q[:, :, condition_len:], k[:, :, condition_len:], v[:, :, condition_len:]))): #q,k:[B, global_head, seq_len/chunk_size, nb_features]  v:[B, global_head, seq_len/chunk_size, dim_head]
+            k_cumsum = last_k_cumsum + k.cumsum(dim=-2) # [B, global_head, seq_len/chunk_size, nb_features]  논문의 식에서 (K')T 1L 에 해당. 다만 causal때문에 cumsum임에 주의. 층위구조.
 
-    return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
+            D_inv = 1. / torch.einsum('...nd,...nd->...n', q, k_cumsum.type_as(q) + eps) # -> [B, global_head, seq_len/chunk_size]  논문의 식에서 Q' ((K')T 1L)에 해당. 다만 층위구조.
+            context = torch.einsum('...nd,...ne->...nde', k, v)  # -> [B, global_head, seq_len/chunk_size, nb_features ,dim_head] outer product.  논문의 식에서 (K')T V.  다만 같은 seq 위치별로.
+            context_cumsum = last_context_cumsum + context.cumsum(dim=-3)  # [B, global_head, seq_len/chunk_size, nb_features ,dim_head]
+            out = torch.einsum('...nde,...nd,...n->...ne', context_cumsum, q, D_inv) # -> [B, global_head, seq_len/chunk_size, dim_head] # 논문의 식에서 Q'와 (K')T V를 메트릭스 곱한 것임. 다만 query별로. 그리고 row별(query별)로 D_inv값 곱함.
+
+            last_k_cumsum = k_cumsum[:, :, -1:] # [B, global_head, 1, nb_features]  # 이건 다음 for문(다음 chunk)에서 D_inv를 구하기 위해 필요.
+            last_context_cumsum = context_cumsum[:, :, -1:]  # [B, global_head, 1, nb_features ,dim_head]  # 이건 다음 for문(다음 chunk)에서 context_cumsum를 구하기 위해 필요.
+            outs.append(out)
+
+        return torch.cat(outs, dim = -2)  # -> [B, global_head, seq_len, dim_head]
 
 
 class FastAttention(nn.Module):
@@ -247,7 +291,7 @@ class FastAttention(nn.Module):
 
         self.causal = causal
         if causal:
-            self.causal_linear_fn = partial(conditioned_causal_linear_attention_noncuda, condition_len=condition_len)
+            self.causal_linear_fn = partial(conditioned_causal_linear_attention_cuda, condition_len=condition_len)
 
     @torch.no_grad()   ## 이 함수는 w들 (phi 함수에서의 w들)을 다시 만들어주는 함수
     def redraw_projection_matrix(self, device):
@@ -443,7 +487,7 @@ class Attention(nn.Module):
 
         out = torch.cat(attn_outs, dim = 1)  # -> [B, heads, seq_len, dim_head]
         out = rearrange(out, 'b h n d -> b n (h d)') # -> [B, seq_len, inner_dim]
-        out =  self.to_out(out)   # -> [B, seq_len, dim]
+        out = self.to_out(out)   # -> [B, seq_len, dim]
         return self.dropout(out)  # -> [B, seq_len, dim]
 
 class SelfAttention(Attention):  # 여기에서 __init__()을 정의하지 않은 것은, Attention에 있는 __init__()을 덮어쓰지 않고 그대로 쓰겠다는 것
@@ -786,6 +830,7 @@ class PerformerLM_i2t(nn.Module):
         layer_pos_emb = self.layer_pos_emb(x)  # [1, seq_len, dim_head]  # TODO: rotary pos emb를 쓴다면 text에 대해서만 적용되어야 함. 가능한가?
         x = self.performer(x, pos_emb = layer_pos_emb, **kwargs) # x: [B, seq_len, dim] -> [B, seq_len, dim]
 
+
         # norm and to logits
         x = self.norm(x)
 
@@ -832,6 +877,7 @@ class PerformerLM_i2t(nn.Module):
 
             logits = self(image, text)[:, -1, :] # -> logits: [B, num_text_tokens]
             filtered_logits = filter_logits_fn(logits, thres = filter_thres)
+
             probs = F.softmax(filtered_logits / temperature, dim = -1) # [B, num_text_tokens]
             sample = torch.multinomial(probs, 1) # [B, 1]
  
@@ -851,58 +897,79 @@ class PerformerLM_i2t(nn.Module):
                 text_seq[row, idx+1:] = pad_token_idx
         return text_seq
 
-
-## ProteinPerformer
-class PerformerLM_Protein(nn.Module):
-    def __init__(self,
-                 max_seq_len,
-                 dim,
-                 depth,
-                 heads,
-                 dim_head=64,
-                 local_attn_heads=0,
-                 local_window_size=256,
-                 causal=False,
-                 condition_len=0,
-                 ff_mult=1,
-                 nb_features=None,
-                 feature_redraw_interval = 1000,
-                 reversible=False,
-                 ff_chunks=1,
-                 ff_glu = False,
-                 emb_dropout = 0.,
-                 ff_dropout = 0.,
-                 attn_dropout = 0.,
-                 generalized_attention = False,
-                 kernel_fn = nn.ReLU(),
-                 use_scalenorm = False,
-                 use_rezero = False,
-                 cross_attend = False,
-                 no_projection = False,
-                 tie_embed = False,
-                 rotary_position_emb = False,
-                 axial_position_emb = False,
-                 axial_position_shape = False,
-                 auto_check_redraw = True,
-                 qkv_bias = False,
-                 attn_out_bias = False,
-                 ):
+## T2I 수행하는 곳
+class PerformerLM_t2i(nn.Module):
+    def __init__(
+            self,
+            *,
+            num_tokens,      # text vocab size
+            num_img_tokens,  # img vocab size + num img pad
+            max_seq_len,     # total max len; img_len * max_img_num + max_text_len
+            max_img_num,     # num img slot
+            dim,
+            depth,
+            heads,
+            dim_head=64,
+            local_attn_heads=0,
+            local_window_size=256,
+            causal=False,
+            condition_len=0,
+            ff_mult=4,
+            nb_features=None,
+            feature_redraw_interval=1000,
+            reversible=False,
+            ff_chunks=1,
+            ff_glu=False,
+            emb_dropout=0.,
+            ff_dropout=0.,
+            attn_dropout=0.,
+            generalized_attention=False,
+            kernel_fn=nn.ReLU(),
+            use_scalenorm=False,
+            use_rezero=False,
+            cross_attend=False,
+            no_projection=False,
+            tie_embed=False,
+            rotary_position_emb=True,
+            axial_position_emb=False,
+            axial_position_shape=None,
+            auto_check_redraw=True,
+            qkv_bias=False,
+            attn_out_bias=False,
+            img_fmap_size=0,
+    ):
         super().__init__()
         self.max_seq_len = max_seq_len
+        self.max_img_num = max_img_num
+        self.condition_len = condition_len
         local_attn_heads = cast_tuple(local_attn_heads)
         self.dim = dim
 
-        # input embedding
-        self.token_emb = nn.Embedding(30, dim)
-        self.layer_pos_emb = Always(None)
+        # img embedding
+        self.image_token_emb = nn.Embedding(num_img_tokens, dim)
+        self.image_pos_emb = AxialPositionalEmbedding(dim=dim, axial_shape=(img_fmap_size, img_fmap_size))
+
+        # text
+        self.token_emb = nn.Embedding(num_tokens, dim)
+        if rotary_position_emb:  # 우리는 False
+            self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len)
+            self.layer_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len)
+        elif axial_position_emb:
+            axial_position_shape = default(axial_position_shape, (math.ceil(max_seq_len / 64), 64))
+            self.pos_emb = AxialPositionalEmbedding(dim, axial_position_shape)
+            self.layer_pos_emb = Always(None)  # 항상 None값을 내뱉는다
+        else:
+            self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
+            self.layer_pos_emb = Always(None)
 
         self.dropout = nn.Dropout(emb_dropout)
 
         self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult,
                                    nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero,
                                    ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
+
         self.norm = nn.LayerNorm(dim)
-        self.to_out = nn.Linear(dim, 30) if not tie_embed else None
+        self.to_out = nn.Linear(dim, num_img_tokens) if not tie_embed else None
 
     def check_redraw_projections(self):
         self.performer.check_redraw_projections()
@@ -910,131 +977,79 @@ class PerformerLM_Protein(nn.Module):
     def fix_projection_matrices_(self):
         self.performer.fix_projection_matrices_()
 
-    def forward(self, x, return_encodings = False, **kwargs):
-        b, n, device = *x.shape, x.device   # b: batch_size, n: x의 seq_len
+    def forward(self, images, texts, return_encodings=False, **kwargs):
+        b, n_img, device = *images.shape, images.device
+        b, n_txt, device = *texts.shape, texts.device
+        n = n_img + n_txt
         assert n <= self.max_seq_len, f'sequence length {n} must be less than the max sequence length {self.max_seq_len}'
+        assert n_txt == self.condition_len, f'text length {n_txt} must be equal to the condition length {self.condition_len}'
 
-        # token embedding
-        x = self.token_emb(x)  # [B, seq_len] -> [B, seq_len, dim]
-        x = self.dropout(x)    # [B, seq_len, dim]
+        # text
+        x_text = self.token_emb(texts) # -> [B, tot_txt_len, dim]
+        x_text = x_text + self.pos_emb(x_text)
 
-        # Performer layers
+        # image
+        x_img = self.image_token_emb(images)  # -> [B, tot_img_len, dim]
+        # 이미지 여러장을 생성하고 싶은 경우, 각 이미지마다 동일한 positional embedding을 더해줘야 한다.
+        outs = []
+        for x_img_slot in x_img.chunk(self.max_img_num, dim=1):   # x_img_slot: [B, img_len, dim]
+            out = self.image_pos_emb(x_img_slot)
+            outs.append(out)
+        x_img_pos = torch.cat(outs, dim=1)
+        x_img += x_img_pos
+
+        # merge, text + image 순으로 merge
+        x = torch.cat((x_text, x_img), dim=1)
+        x = self.dropout(x)
+
+        # performer layer
         layer_pos_emb = self.layer_pos_emb(x)
-        x = self.performer(x, pos_emb = layer_pos_emb, **kwargs)
+        x = self.performer(x, pos_emb=layer_pos_emb, **kwargs)
 
-        # norm
         x = self.norm(x)
 
-        return self.to_out(x)   # [B, seq_len, num_tokens]
+        if return_encodings:  # 보통 False
+            return x
 
+        if exists(self.to_out):
+            return self.to_out(x)   # [B, seq_len, num_tokens]
+
+        return x @ self.image_token_emb.weight.t()   # weight tieing 했을 시
+
+    # inference할 때 image 생성하기
     @torch.no_grad()
     @eval_decorator
-    def generate_proteins(self,
-                          x,
-                          filter_logits_fn = 'top_k',
-                          filter_thres = 0.9,
-                          temperature = 1.
-                          ):
+    def generate_image(self,
+                       texts,
+                       *,
+                       filter_logits_fn='top_k',
+                       filter_thres=0.9,
+                       temperature=1.,
+                       ):
+
         if filter_logits_fn == 'top_k':
             filter_logits_fn = top_k
         elif filter_logits_fn == 'top_p':
             filter_logits_fn = top_p
         else:
-            raise ValueError('filter_logits_fn must be in (top_k, top_p)')
+            raise ValueError('filter_logits_fn must be either top_k or top_p')
 
+        B, txt_seq_len, device = *texts.shape, texts.device
+        total_len = self.max_seq_len
 
-        out = x[:, 0].unsqueeze(-1)   # (B, 1)  첫번째 protein sequence만 제공
+        out = texts
 
-        for cur_len in range(self.max_seq_len-1):
-            logits = self(out)[:, -1, :]  # -> [B, num_text_token]
+        # for 문 돌리면서 image token 하나씩 생성
+        for cur_len in range(txt_seq_len, total_len):
+            text, image = out[:, :txt_seq_len], out[:, txt_seq_len:]
+
+            logits = self(image, text)[:, -1, :]  # -> logits: [B, num_text_tokens]
             filtered_logits = filter_logits_fn(logits, thres=filter_thres)
-            probs = F.softmax(filtered_logits / temperature, dim=-1)  # [B, num_text_tokens]
-            sample = torch.multinomial(probs, 1)  # [B, 1]
+
+            probs = F.softmax(filtered_logits/temperature, dim=-1)
+            sample = torch.multinomial(probs, 1)   # [B, 1]
 
             out = torch.cat((out, sample), dim=-1)
 
-        return out
-
-
-## OneBillionWordsPerformer
-class PerformerLM_OneBillionWords(nn.Module):
-    def __init__(self,
-                 max_seq_len,
-                 dim,
-                 depth,
-                 heads,
-                 dim_head=64,
-                 local_attn_heads=0,
-                 local_window_size=256,
-                 causal=False,
-                 condition_len=0,
-                 ff_mult=4,
-                 nb_features=None,
-                 feature_redraw_interval=1000,
-                 reversible=False,
-                 ff_chunks=1,
-                 ff_glu = False,
-                 emb_dropout = 0.,
-                 ff_dropout = 0.,
-                 attn_dropout = 0.,
-                 generalized_attention = False,
-                 kernel_fn = nn.ReLU(),
-                 use_scalenorm = False,
-                 use_rezero = False,
-                 cross_attend = False,
-                 no_projection = False,
-                 tie_embed = False,
-                 rotary_position_emb = False,
-                 axial_position_emb = False,
-                 axial_position_shape = False,
-                 auto_check_redraw = True,
-                 qkv_bias = False,
-                 attn_out_bias = False,
-                 ):
-        super().__init__()
-        self.max_seq_len = max_seq_len
-        local_attn_heads = cast_tuple(local_attn_heads)
-        self.dim = dim
-
-        # input embedding
-        self.token_emb = nn.Embedding(30522, dim)
-        self.positional_embedding = nn.Embedding(max_seq_len, dim)
-        self.layer_pos_emb = Always(None)
-
-        self.dropout = nn.Dropout(emb_dropout)
-
-        self.performer = Performer(dim, depth, heads, dim_head, local_attn_heads, local_window_size, causal, condition_len, ff_mult,
-                                   nb_features, feature_redraw_interval, reversible, ff_chunks, generalized_attention, kernel_fn, use_scalenorm, use_rezero,
-                                   ff_glu, ff_dropout, attn_dropout, cross_attend, no_projection, auto_check_redraw, qkv_bias, attn_out_bias)
-        self.norm = nn.LayerNorm(dim)
-        self.to_out = nn.Linear(dim, 30522) if not tie_embed else None
-
-    def check_redraw_projections(self):
-        self.performer.check_redraw_projections()
-
-    def fix_projection_matrices_(self):
-        self.performer.fix_projection_matrices_()
-
-    def forward(self, x, return_encodings = False, **kwargs):
-        b, n, device = *x.shape, x.device   # b: batch_size, n: x의 seq_len
-        assert n <= self.max_seq_len, f'sequence length {n} must be less than the max sequence length {self.max_seq_len}'
-
-        # token embedding
-        x = self.token_emb(x)  # [B, seq_len] -> [B, seq_len, dim]
-        # positional embedding
-        seq_len = torch.LongTensor([i for i in range(self.max_seq_len)]).cuda()
-        seq_len = self.positional_embedding(seq_len)
-        x = x + seq_len
-
-        x = self.dropout(x)    # [B, seq_len, dim]
-
-        # Performer layers
-        layer_pos_emb = self.layer_pos_emb(x)
-        x = self.performer(x, pos_emb = layer_pos_emb, **kwargs)
-
-        # norm
-        x = self.norm(x)
-
-        return self.to_out(x)   # [B, seq_len, num_tokens]
-
-
+        image_seq = out[:, txt_seq_len:]  # text 이후에 있는 생성된 이미지 토큰만 가져오기
+        return image_seq

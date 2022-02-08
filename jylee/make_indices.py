@@ -2,10 +2,10 @@ import os
 import pdb
 from vae import VQGanVAE
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 VQGAN_MODEL_PATH = '/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/checkpoints/last.ckpt'
-VQGAN_CONFIG_PATH = '/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/configs/2021-10-23T11-14-46-project.yaml'
+VQGAN_CONFIG_PATH = '/home/edlab/jylee/Scaleup/mimiccxr_vqgan1024_res512/configs/2021-12-17T08-58-54-project.yaml'
 
 vae = VQGanVAE(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH).cuda()
 
@@ -33,10 +33,11 @@ def preprocess_image(image_path):
     image = (image / 255.0).astype(np.float32)  # 0. ~ 1.
     return image
 
+print('before image list')
 from pathlib import Path
 root = Path('/home/edlab/wcshin/physionet.org/files/mimic-cxr-jpg/2.0.0/files')
 img_paths = [*root.glob('**/*.jpg')]
-
+print('after image list')
 
 import pickle
 from tqdm import tqdm
@@ -52,5 +53,6 @@ for path in tqdm(img_paths):
     indices_list = encoded.squeeze().cpu().detach().tolist()
     dict_by_dicomid[dicom_id] = indices_list
 
-with open('mimiccxr_vqgan1024_res512_codebook_indices.pickle', 'wb') as f:
+### 이 부분만 바꿔서 원하는 위치에 code indice 저장하기
+with open('/home/edlab/jylee/Scaleup/data/mimiccxr_vqgan1024_res512_codebook_indices.pickle', 'wb') as f:   
     pickle.dump(dict_by_dicomid, f)

@@ -55,6 +55,8 @@ class Transformer(nn.Module):
             ff_mult = 4,
             nb_features = None,
             feature_redraw_interval = 1000,
+            generalized_attention = False,
+            kernel_fn = nn.ReLU(),
             reversible = False,
             use_scalenorm = False,
             use_rezero = False,
@@ -85,7 +87,7 @@ class Transformer(nn.Module):
             for _, local_heads in zip(range(depth), local_attn_heads):
                 # Self-Attention + Feed Forward 합치는 부분
                 layers.append(nn.ModuleList([
-                    wrapper_fn(FAVORAttention(dim = dim, causal=causal, condition_len=condition_len, heads=heads,
+                    wrapper_fn(FAVORAttention(dim = dim, causal=causal, condition_len=condition_len, heads=heads, generalized_attention=generalized_attention, kernel_fn=kernel_fn,
                                     local_heads=local_heads, nb_features=nb_features, dropout=attn_dropout, no_projection=no_projection, qkv_bias=qkv_bias, attn_out_bias=attn_out_bias)),
                     wrapper_fn(PositionWiseFeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout, activation=None))
                 ]))
@@ -150,6 +152,8 @@ class TransformerLM_i2t(nn.Module):
             emb_dropout = 0.,
             ff_dropout = 0.,
             attn_dropout = 0.,
+            generalized_attention=False,
+            kernel_fn = nn.ReLU(),
             use_scalenorm=False,
             use_rezero=False,
             cross_attend=False,
@@ -194,7 +198,7 @@ class TransformerLM_i2t(nn.Module):
 
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.transformer = Transformer(dim, depth, heads, local_attn_heads, causal, condition_len, ff_mult, nb_features, feature_redraw_interval,
+        self.transformer = Transformer(dim, depth, heads, local_attn_heads, causal, condition_len, ff_mult, nb_features, feature_redraw_interval, generalized_attention, kernel_fn,
                                        reversible, use_scalenorm, use_rezero, ff_dropout, attn_dropout, cross_attend, auto_check_redraw, qkv_bias, attn_out_bias, no_projection, FAVOR)
 
         self.norm = nn.LayerNorm(dim)

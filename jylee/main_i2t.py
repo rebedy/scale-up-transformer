@@ -10,8 +10,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 from functools import partial
 from tokenizers import ByteLevelBPETokenizer
-from tokenizers.processors import \
-    BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
+from tokenizers.processors import BertProcessing  # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
 from loader import CXRDataset
 from datamodule import CXRDataModule
 from plmodel import PerformerLightning_i2t, TransformerLightning_i2t
@@ -43,6 +42,7 @@ if __name__ == '__main__':
 
     # training args
     parser.add_argument('--reload_ckpt_dir', default=None, type=str)
+    parser.add_argument('--sav_dir', type=str)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--batch_size', default=16, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_epochs', default=1000, type=int)
     parser.add_argument('--n_gpus', default=2, type=int)
     parser.add_argument('--save_top_k', default=5, type=int)
-    parser.add_argument('--fp16', default=True, type=str2bool, help='FP16')
+    parser.add_argument('--fp16', default=False, type=str2bool, help='FP16')
     parser.add_argument('--sharded_ddp', default=False, type=str2bool, help='fairscale sharded ddp')
 
     # model args
@@ -68,7 +68,7 @@ if __name__ == '__main__':
     parser.add_argument('--reversible', default=False, type=str2bool,
                         help='reversible layers, from Reformer paper. Works only when sharded_ddp=True')
     parser.add_argument('--ff_chunks', default=10, type=int, help='chunk feedforward layer, from Reformer paper')
-    parser.add_argument('--ff_glu', default=True, type=str2bool, help='use GLU variant for feedforward')
+    parser.add_argument('--ff_glu', default=False, type=str2bool, help='use GLU variant for feedforward')
     parser.add_argument('--emb_dropout', default=0.1, type=float, help='embedding dropout')
     parser.add_argument('--ff_dropout', default=0.1, type=float, help='feedforward dropout')
     parser.add_argument('--attn_dropout', default=0.1, type=float, help='post-attn dropout')
@@ -174,6 +174,7 @@ if __name__ == '__main__':
             pad_token_idx=tokenizer.token_to_id("[PAD]"),
             sos_token_idx=tokenizer.token_to_id("[SOS]"),
             eos_token_idx=tokenizer.token_to_id("[EOS]"),
+            sav_dir=args.sav_dir,
             **kargs_performerLM_i2t,
         )
     else:
@@ -184,15 +185,16 @@ if __name__ == '__main__':
             pad_token_idx=tokenizer.token_to_id("[PAD]"),
             sos_token_idx=tokenizer.token_to_id("[SOS]"),
             eos_token_idx=tokenizer.token_to_id("[EOS]"),
+            sav_dir=args.sav_dir,
             **kargs_performerLM_i2t,
         )
 
     # callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join('/home/edlab/jylee/Scaleup/output/Performer', '{epoch:06}--{val_loss:.2f}'),
+        dirpath=f'/home/edlab/jylee/Scaleup/output/i2t/{args.sav_dir}',
         verbose=True,
         save_last=True,
-        # filename="{epoch:06}",
+        filename="{epoch:06}--{val_loss:.2f}",
         save_top_k=args.save_top_k,
         monitor='val_loss',
         mode='min',
@@ -203,11 +205,12 @@ if __name__ == '__main__':
     )
 
     trainer_args = {
-        'callbacks': [checkpoint_callback, lr_callback],
+        # 'callbacks': [checkpoint_callback, lr_callback],
+        'callbacks': [lr_callback],
         'max_epochs': args.n_epochs,
         'gpus': args.n_gpus,
         'accelerator': 'ddp',
-        'num_sanity_val_steps': 1,
+        'num_sanity_val_steps': 0,
     }
 
     if args.reload_ckpt_dir:
@@ -219,16 +222,13 @@ if __name__ == '__main__':
     ## TODO: 이중에서 나는 뭘 하면 되는 거지?
 
     if (args.fp16 == True and args.sharded_ddp == True):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded',
-                             gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins='ddp_sharded', gradient_clip_val=0.5)
     elif (args.fp16 == True and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16,
-                             plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, precision=16, plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
     elif (args.fp16 == False and args.sharded_ddp == True):
         trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins='ddp_sharded', gradient_clip_val=0.5)
     elif (args.fp16 == False and args.sharded_ddp == False):
-        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins=DDPPlugin(find_unused_parameters=False),
-                             gradient_clip_val=0.5)
+        trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins=DDPPlugin(find_unused_parameters=False), gradient_clip_val=0.5)
 
     # log gradients and model topology
     # wandb_logger.watch(model)

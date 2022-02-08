@@ -49,12 +49,12 @@ class TransformerAttention(nn.Module):
 
         # hard coding  ## TODO: change
         causal_mask = torch.ones(seq_len, seq_len).to(attn_weights.device)
-        causal_mask[:, :256] = 0
+        causal_mask[:, :1024] = 0
 
-        small_causal_mask = torch.ones(seq_len-256, seq_len-256).to(attn_weights.device)
+        small_causal_mask = torch.ones(seq_len-1024, seq_len-1024).to(attn_weights.device)
         small_causal_mask = torch.triu(small_causal_mask, diagonal=1)
 
-        causal_mask[256:, 256:] = small_causal_mask
+        causal_mask[1024:, 1024:] = small_causal_mask
 
         # causal_mask = torch.triu(causal_mask, diagonal=1)
 
