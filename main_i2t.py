@@ -1,18 +1,20 @@
 import os
 import argparse
-import torch
+from functools import partial
 import torch.nn as nn
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
-from functools import partial
+from pytorch_lightning.plugins import DDPPlugin
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing # This post-processor takes care of adding the special tokens: a [EOS] token and a [SOS] token
+
 from loader import CXRDataset
 from datamodule import CXRDataModule
 from i2t_plmodel import PerformerLightning_i2t
-from pytorch_lightning.plugins import DDPPlugin
 from utils import str2bool
+
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"

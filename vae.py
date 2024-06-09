@@ -1,16 +1,14 @@
-import torch
-from torch import nn
-from omegaconf import OmegaConf
 import importlib
 from math import sqrt, log
-from einops import rearrange
+import torch
+from torch import nn
 import torch.nn.functional as F
-
+from einops import rearrange
+from omegaconf import OmegaConf
 from taming.models.vqgan import VQModel, GumbelVQ
 
 
 # VQGAN from Taming Transformers paper
-
 
 # helper
 
@@ -51,25 +49,31 @@ class VQGanVAE(nn.Module):
         self.num_layers = int(log(self.f) / log(2))
         self.image_size = config.model.params.ddconfig.resolution
         self.num_tokens = config.model.params.n_embed
+        self.embed_dim = config.model.params.embed_dim
         self.is_gumbel = isinstance(self.model, GumbelVQ)
 
     @torch.no_grad()
     def get_codebook_indices(self, img):
         b = img.shape[0]
         img = (2 * img) - 1  # 0. ~ 1. -> -1. ~ 1.
-        _, _, [_, _, indices] = self.model.encode(img)
+        z_q, emb_loss, [perplexity, min_encodings, indices] = self.model.encode(img)
+        indices = indices.squeeze(-1)
         if self.is_gumbel:
             return rearrange(indices, 'b h w -> b (h w)', b=b)
-        return rearrange(indices, '(b n) -> b n', b=b)
+        return z_q, emb_loss, perplexity, rearrange(indices, '(b n) -> b n', b=b)
 
     def decode(self, img_seq):
         b, n = img_seq.shape
-        one_hot_indices = F.one_hot(img_seq, num_classes=self.num_tokens).float()
+
+        one_hot_indices = F.one_hot(img_seq, num_classes=self.num_tokens).float()  # 1024
         z = one_hot_indices @ self.model.quantize.embed.weight if self.is_gumbel \
             else (one_hot_indices @ self.model.quantize.embedding.weight)
-
         z = rearrange(z, 'b (h w) c -> b c h w', h=int(sqrt(n)))
+
         img = self.model.decode(z)
+
+        # z_q, loss, A = self.model.quantize(z)
+        # perplexity, min_encodings, min_encoding_indices = A
 
         img = (img.clamp(-1., 1.) + 1) * 0.5
         return img  # 0. ~ 1.

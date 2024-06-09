@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score
 import argparse
 import warnings
 warnings.filterwarnings(action='ignore')
@@ -107,6 +107,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    metric_pos1, metric_0, metric_neg1, metric_all, accuracy_all_list, precision_all_list, recall_all_list, f1_all_list = get_label_metric_v4(hypothesis=args.hyp_file, reference=args.ref_file)
+    metric_pos1, metric_0, metric_neg1, metric_all, accuracy_all_list, precision_all_list, recall_all_list, f1_all_list = \
+        get_label_metric_v4(
+            hypothesis=args.hyp_file,
+            reference=args.ref_file
+        )
 
     print("(micro) accuracy, precision, recall, f1 for all : {}, {}, {}, {}".format(round(metric_all[0], 3), round(metric_all[1], 3), round(metric_all[2], 3), round(metric_all[3], 3)))
