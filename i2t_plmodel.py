@@ -401,7 +401,6 @@ class PerformerLightning_i2t(pl.LightningModule):
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
         # return {"optimizer": optimizer, "monitor": "val_loss"}
-        # TODO: 추후 scheduler 변경도 고려해보기
 
 
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
@@ -784,4 +783,3 @@ class TransformerLightning_i2t(pl.LightningModule):
             verbose=True,
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
-        # TODO: 추후 scheduler 변경도 고려해보기

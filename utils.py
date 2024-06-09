@@ -1,6 +1,7 @@
 import argparse
 
-##### helper function #####
+# #### helper function #####
+
 
 def str2bool(input_):
     if input_.lower() in ('yes', 'true', 't', 'y', '1'):

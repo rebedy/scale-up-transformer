@@ -81,10 +81,10 @@ def get_label_metric_v4(hypothesis, reference):
     f1_all_list = []
 
     for i in range(df_all_matching.shape[1]):
-        acc = df_all_matching[:,i].sum() / df_all_matching[:,i].size
-        pcn = df_all_matching_exclude_TN[:,i].sum() / df_hyp_all[:,i].sum()
-        rcl = df_all_matching_exclude_TN[:,i].sum() / df_ref_all[:,i].sum()
-        f1 = 2 / (1/pcn + 1/rcl)
+        acc = df_all_matching[:, i].sum() / df_all_matching[:, i].size
+        pcn = df_all_matching_exclude_TN[:, i].sum() / df_hyp_all[:, i].sum()
+        rcl = df_all_matching_exclude_TN[:, i].sum() / df_ref_all[:, i].sum()
+        f1 = 2 / (1 / pcn + 1 / rcl)
         accuracy_all_list.append(acc)
         precision_all_list.append(pcn)
         recall_all_list.append(rcl)
