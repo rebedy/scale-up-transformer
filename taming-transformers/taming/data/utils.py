@@ -1,7 +1,8 @@
 import os
 import numpy as np
 import urllib
-import tarfile, zipfile
+import tarfile
+import zipfile
 from pathlib import Path
 from tqdm import tqdm
 
@@ -56,7 +57,8 @@ def prompt_download(file_, source, target_dir, content_dir=None):
         ):
             break
         print(
-            "Please download '{}' from '{}' to '{}'.".format(file_, source, targetpath)
+            "Please download '{}' from '{}' to '{}'.".format(
+                file_, source, targetpath)
         )
         if content_dir is not None:
             print(
@@ -111,4 +113,4 @@ def quadratic_crop(x, bbox, alpha=1.0):
         center = center[0] + required_padding, center[1] + required_padding
     xmin = int(center[0] - l / 2)
     ymin = int(center[1] - l / 2)
-    return np.array(x[ymin : ymin + l, xmin : xmin + l, ...])
+    return np.array(x[ymin: ymin + l, xmin: xmin + l, ...])

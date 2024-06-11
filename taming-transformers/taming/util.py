@@ -1,4 +1,5 @@
-import os, hashlib
+import os
+import hashlib
 import requests
 from tqdm import tqdm
 
@@ -154,4 +155,3 @@ if __name__ == "__main__":
     config = OmegaConf.create(config)
     print(config)
     retrieve(config, "keya")
-

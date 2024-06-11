@@ -6,7 +6,7 @@ from PIL import Image
 from tqdm import tqdm
 from torch.utils.data import Dataset
 
-from taming.data.sflckr import SegmentationBase # for examples included in repo
+from taming.data.sflckr import SegmentationBase  # for examples included in repo
 
 
 class Examples(SegmentationBase):
@@ -21,6 +21,7 @@ class Examples(SegmentationBase):
 
 class CocoBase(Dataset):
     """needed for (image, caption, segmentation) pairs"""
+
     def __init__(self, size=None, dataroot="", datajson="", onehot_segmentation=False, use_stuffthing=False,
                  crop_size=None, force_no_crop=False, given_files=None):
         self.split = self.get_split()
@@ -33,9 +34,9 @@ class CocoBase(Dataset):
         self.onehot = onehot_segmentation       # return segmentation as rgb or one hot
         self.stuffthing = use_stuffthing        # include thing in segmentation
         if self.onehot and not self.stuffthing:
-            raise NotImplemented("One hot mode is only supported for the "
-                                 "stuffthings version because labels are stored "
-                                 "a bit different.")
+            raise NotImplementedError("One hot mode is only supported for the "
+                                      "stuffthings version because labels are stored "
+                                      "a bit different.")
 
         data_json = datajson
         with open(data_json) as json_file:
@@ -60,7 +61,8 @@ class CocoBase(Dataset):
         imagedirs = self.json_data["images"]
         self.labels = {"image_ids": list()}
         for imgdir in tqdm(imagedirs, desc="ImgToPath"):
-            self.img_id_to_filepath[imgdir["id"]] = os.path.join(dataroot, imgdir["file_name"])
+            self.img_id_to_filepath[imgdir["id"]] = os.path.join(
+                dataroot, imgdir["file_name"])
             self.img_id_to_captions[imgdir["id"]] = list()
             pngfilename = imgdir["file_name"].replace("jpg", "png")
             self.img_id_to_segmentation_filepath[imgdir["id"]] = os.path.join(
@@ -74,18 +76,22 @@ class CocoBase(Dataset):
         capdirs = self.json_data["annotations"]
         for capdir in tqdm(capdirs, desc="ImgToCaptions"):
             # there are in average 5 captions per image
-            self.img_id_to_captions[capdir["image_id"]].append(np.array([capdir["caption"]]))
+            self.img_id_to_captions[capdir["image_id"]].append(
+                np.array([capdir["caption"]]))
 
         self.rescaler = albumentations.SmallestMaxSize(max_size=self.size)
-        if self.split=="validation":
-            self.cropper = albumentations.CenterCrop(height=self.crop_size, width=self.crop_size)
+        if self.split == "validation":
+            self.cropper = albumentations.CenterCrop(
+                height=self.crop_size, width=self.crop_size)
         else:
-            self.cropper = albumentations.RandomCrop(height=self.crop_size, width=self.crop_size)
+            self.cropper = albumentations.RandomCrop(
+                height=self.crop_size, width=self.crop_size)
         self.preprocessor = albumentations.Compose(
             [self.rescaler, self.cropper],
             additional_targets={"segmentation": "image"})
         if force_no_crop:
-            self.rescaler = albumentations.Resize(height=self.size, width=self.size)
+            self.rescaler = albumentations.Resize(
+                height=self.size, width=self.size)
             self.preprocessor = albumentations.Compose(
                 [self.rescaler],
                 additional_targets={"segmentation": "image"})
@@ -125,7 +131,8 @@ class CocoBase(Dataset):
             flatseg = np.ravel(segmentation)
             onehot = np.zeros((flatseg.size, n_labels), dtype=np.bool)
             onehot[np.arange(flatseg.size), flatseg] = True
-            onehot = onehot.reshape(segmentation.shape + (n_labels,)).astype(int)
+            onehot = onehot.reshape(
+                segmentation.shape + (n_labels,)).astype(int)
             segmentation = onehot
         else:
             segmentation = (segmentation / 127.5 - 1.0).astype(np.float32)
@@ -144,12 +151,13 @@ class CocoBase(Dataset):
                    "img_path": img_path,
                    "seg_path": seg_path,
                    "filename_": img_path.split(os.sep)[-1]
-                    }
+                   }
         return example
 
 
 class CocoImagesAndCaptionsTrain(CocoBase):
     """returns a pair of (image, caption)"""
+
     def __init__(self, size, onehot_segmentation=False, use_stuffthing=False, crop_size=None, force_no_crop=False):
         super().__init__(size=size,
                          dataroot="data/coco/train2017",
@@ -163,6 +171,7 @@ class CocoImagesAndCaptionsTrain(CocoBase):
 
 class CocoImagesAndCaptionsValidation(CocoBase):
     """returns a pair of (image, caption)"""
+
     def __init__(self, size, onehot_segmentation=False, use_stuffthing=False, crop_size=None, force_no_crop=False,
                  given_files=None):
         super().__init__(size=size,

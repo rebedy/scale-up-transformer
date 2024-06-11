@@ -1,18 +1,24 @@
-import os
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2"
-import argparse, os, sys, datetime, glob, importlib
-from omegaconf import OmegaConf
-import numpy as np
-from PIL import Image
-import torch
-import torchvision
-from torch.utils.data import random_split, DataLoader, Dataset
-import pytorch_lightning as pl
-from pytorch_lightning import seed_everything
-from pytorch_lightning.trainer import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
+import importlib
+import glob
+import datetime
+import sys
+import argparse
 from pytorch_lightning.utilities.distributed import rank_zero_only
+from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.trainer import Trainer
+from pytorch_lightning import seed_everything
+import pytorch_lightning as pl
+from torch.utils.data import DataLoader, Dataset
+import torchvision
+import torch
+from PIL import Image
+import numpy as np
+from omegaconf import OmegaConf
+import wandb
+import os
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
+
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
@@ -67,7 +73,8 @@ def get_parser(**parser_kwargs):  # parser_kwargs: {}
         type=str2bool,
         const=True,
         default=False,
-        nargs="?",     # 0개 또는 1개의 값을 읽어들인다. 인자와 값을 모두 적은 경우 해당 값이 저장. 인자만 적은 경우 const 값이 저장. 아무것도 적지 않았으면 default 값이 저장.
+        # 0개 또는 1개의 값을 읽어들인다. 인자와 값을 모두 적은 경우 해당 값이 저장. 인자만 적은 경우 const 값이 저장. 아무것도 적지 않았으면 default 값이 저장.
+        nargs="?",
         help="train",
     )
     parser.add_argument(
@@ -78,7 +85,8 @@ def get_parser(**parser_kwargs):  # parser_kwargs: {}
         nargs="?",
         help="disable test",
     )
-    parser.add_argument("-p", "--project", help="name of new or path to existing project")
+    parser.add_argument("-p", "--project",
+                        help="name of new or path to existing project")
     parser.add_argument(
         "-d",
         "--debug",
@@ -110,17 +118,21 @@ def nondefault_trainer_args(opt):
     parser = argparse.ArgumentParser()
     parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args([])
-    return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k)) # k:key  getattr(opt, k): value
+    # k:key  getattr(opt, k): value
+    return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
 
 
 def instantiate_from_config(config):
-    if not "target" in config:
+    if "target" not in config:
         raise KeyError("Expected key `target` to instantiate.")
-    return get_obj_from_str(config["target"])(**config.get("params", dict()))  # 여기서 model instance, 만들어짐
+    # 여기서 model instance, 만들어짐
+    return get_obj_from_str(config["target"])(**config.get("params", dict()))
     # eg. config["target"]: 'taming.models.vqgan.VQModel'
+
 
 class WrappedDataset(Dataset):
     """Wraps an arbitrary object with __len__ and __getitem__ into a pytorch dataset"""
+
     def __init__(self, dataset):
         self.data = dataset
 
@@ -137,7 +149,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
         super().__init__()
         self.batch_size = batch_size
         self.dataset_configs = dict()
-        self.num_workers = num_workers if num_workers is not None else batch_size*2
+        self.num_workers = num_workers if num_workers is not None else batch_size * 2
         if train is not None:
             self.dataset_configs["train"] = train
             self.train_dataloader = self._train_dataloader
@@ -149,7 +161,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             self.test_dataloader = self._test_dataloader
         self.wrap = wrap   # 보통 False
         # self.dataset_configs: { 'train':{'target':...,'param':...}, 'validation':{'target':...,'param':...} }
-    
+
     def prepare_data(self):
         for data_cfg in self.dataset_configs.values():
             instantiate_from_config(data_cfg)
@@ -187,7 +199,8 @@ class SetupCallback(Callback):
         self.config = config
         self.lightning_config = lightning_config
 
-    def on_pretrain_routine_start(self, trainer, pl_module):  # Called at the beginning of the pretrain routine (between fit and train start).  Available Callback hooks
+    # Called at the beginning of the pretrain routine (between fit and train start).  Available Callback hooks
+    def on_pretrain_routine_start(self, trainer, pl_module):
         if trainer.global_rank == 0:
             # Create logdirs and save configs
             os.makedirs(self.logdir, exist_ok=True)
@@ -225,7 +238,9 @@ class ImageLogger(Callback):
             pl.loggers.WandbLogger: self._wandb,
             pl.loggers.TestTubeLogger: self._testtube,
         }
-        self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]   # eg. range(10). self.log_steps = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+        # eg. range(10). self.log_steps = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+        self.log_steps = [
+            2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
             self.log_steps = [self.batch_freq]
         self.clamp = clamp
@@ -243,7 +258,7 @@ class ImageLogger(Callback):
     def _testtube(self, pl_module, images, batch_idx, split):
         for k in images:
             grid = torchvision.utils.make_grid(images[k])
-            grid = (grid+1.0)/2.0 # -1,1 -> 0,1; c,h,w
+            grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
 
             tag = f"{split}/{k}"
             pl_module.logger.experiment.add_image(
@@ -257,10 +272,11 @@ class ImageLogger(Callback):
         for k in images:
             grid = torchvision.utils.make_grid(images[k], nrow=4)  # [C, H, W]
 
-            grid = (grid+1.0)/2.0 # -1,1 -> 0,1; c,h,w
-            grid = grid.transpose(0,1).transpose(1,2).squeeze(-1)  # -> [H, W, C]
+            grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+            grid = grid.transpose(0, 1).transpose(
+                1, 2).squeeze(-1)  # -> [H, W, C]
             grid = grid.numpy()
-            grid = (grid*255).astype(np.uint8)
+            grid = (grid * 255).astype(np.uint8)
             filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
                 k,
                 global_step,
@@ -272,7 +288,8 @@ class ImageLogger(Callback):
 
     def log_img(self, pl_module, batch, batch_idx, split="train"):
         if (self.check_frequency(batch_idx) and  # batch_idx % self.batch_freq == 0
-                hasattr(pl_module, "log_images") and  # VQModel의 정의에 가보면 log_images가 정의되어 있음
+                # VQModel의 정의에 가보면 log_images가 정의되어 있음
+                hasattr(pl_module, "log_images") and
                 callable(pl_module.log_images) and
                 self.max_images > 0):
             logger = type(pl_module.logger)   # TestTubeLogger
@@ -282,10 +299,12 @@ class ImageLogger(Callback):
                 pl_module.eval()
 
             with torch.no_grad():
-                images = pl_module.log_images(batch, split=split)  # {'inputs': tensor([B, 3, 256, 267]), 'reconstructions': tensor([B, 3, 256, 256])}
+                # {'inputs': tensor([B, 3, 256, 267]), 'reconstructions': tensor([B, 3, 256, 256])}
+                images = pl_module.log_images(batch, split=split)
 
             for k in images:
-                N = min(images[k].shape[0], self.max_images)  # self.max_images = 4. batch_size가 4보다 크면 이미지 logging할 때 4개만 하겠다
+                # self.max_images = 4. batch_size가 4보다 크면 이미지 logging할 때 4개만 하겠다
+                N = min(images[k].shape[0], self.max_images)
                 images[k] = images[k][:N]
                 if isinstance(images[k], torch.Tensor):
                     images[k] = images[k].detach().cpu()
@@ -295,7 +314,8 @@ class ImageLogger(Callback):
             self.log_local(pl_module.logger.save_dir, split, images,
                            pl_module.global_step, pl_module.current_epoch, batch_idx)
 
-            logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)   # self._testtube
+            logger_log_images = self.logger_log_images.get(
+                logger, lambda *args, **kwargs: None)   # self._testtube
             logger_log_images(pl_module, images, pl_module.global_step, split)
 
             if is_train:
@@ -310,12 +330,13 @@ class ImageLogger(Callback):
             return True
         return False
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):       # Called when the train batch ends.  Available Callback hooks
+    # Called when the train batch ends.  Available Callback hooks
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         self.log_img(pl_module, batch, batch_idx, split="train")
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):  # Called when the validation batch ends. Available Callback hooks
+    # Called when the validation batch ends. Available Callback hooks
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         self.log_img(pl_module, batch, batch_idx, split="val")
-
 
 
 if __name__ == "__main__":
@@ -368,9 +389,11 @@ if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
     parser = get_parser()
-    parser = Trainer.add_argparse_args(parser)  # add ALL possible trainer flags to the argparser and init the Trainer this way
+    # add ALL possible trainer flags to the argparser and init the Trainer this way
+    parser = Trainer.add_argparse_args(parser)
 
-    opt, unknown = parser.parse_known_args()  #  parse_args() 와 매우 유사하게 작동하는데, 여분의 인자가 있을 때 에러를 발생시키지 않는 점이 다름
+    # parse_args() 와 매우 유사하게 작동하는데, 여분의 인자가 있을 때 에러를 발생시키지 않는 점이 다름
+    opt, unknown = parser.parse_known_args()
     if opt.name and opt.resume:
         raise ValueError(
             "-n/--name and -r/--resume cannot be specified both."
@@ -382,7 +405,7 @@ if __name__ == "__main__":
             raise ValueError("Cannot find {}".format(opt.resume))
         if os.path.isfile(opt.resume):
             paths = opt.resume.split("/")
-            idx = len(paths)-paths[::-1].index("logs")+1
+            idx = len(paths) - paths[::-1].index("logs") + 1
             logdir = "/".join(paths[:idx])
             ckpt = opt.resume
         else:
@@ -391,20 +414,21 @@ if __name__ == "__main__":
             ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
 
         opt.resume_from_checkpoint = ckpt
-        base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
-        opt.base = base_configs+opt.base
+        base_configs = sorted(
+            glob.glob(os.path.join(logdir, "configs/*.yaml")))
+        opt.base = base_configs + opt.base
         _tmp = logdir.split("/")
-        nowname = _tmp[_tmp.index("logs")+1]
+        nowname = _tmp[_tmp.index("logs") + 1]
     else:
         if opt.name:
-            name = "_"+opt.name
+            name = "_" + opt.name
         elif opt.base:
             cfg_fname = os.path.split(opt.base[0])[-1]
             cfg_name = os.path.splitext(cfg_fname)[0]
-            name = "_"+cfg_name
+            name = "_" + cfg_name
         else:
             name = ""
-        nowname = now+name+opt.postfix
+        nowname = now + name + opt.postfix
         logdir = os.path.join("logs", nowname)
 
     ckptdir = os.path.join(logdir, "checkpoints")
@@ -413,17 +437,22 @@ if __name__ == "__main__":
 
     try:
         # init and save configs
-        configs = [OmegaConf.load(cfg) for cfg in opt.base]   # print(configs[0].pretty())
-        cli = OmegaConf.from_dotlist(unknown)   # 점으로 구분된 아이템으로 이루어진 리스트를 이용한 생성. eg) dot_list = ["a.aa.aaa=1", "a.aa.bbb=2", "a.bb.aaa=3", "a.bb.bbb=4"]  conf = OmegaConf.from_dotlist(dot_list)
-        config = OmegaConf.merge(*configs, cli) #  좌측부터 우측으로 처리되므로 겹치는 경우 더 우측에 있는 것으로 덮어쓰게 됨
-        lightning_config = config.pop("lightning", OmegaConf.create())      # 보통 lightning_config = {}  # 설정정보 중 일부 키를 삭제할 때는 conf.pop("키명") 또는 del conf["키명"] 으로 삭제
+        # print(configs[0].pretty())
+        configs = [OmegaConf.load(cfg) for cfg in opt.base]
+        # 점으로 구분된 아이템으로 이루어진 리스트를 이용한 생성. eg) dot_list = ["a.aa.aaa=1", "a.aa.bbb=2", "a.bb.aaa=3", "a.bb.bbb=4"]  conf = OmegaConf.from_dotlist(dot_list)
+        cli = OmegaConf.from_dotlist(unknown)
+        # 좌측부터 우측으로 처리되므로 겹치는 경우 더 우측에 있는 것으로 덮어쓰게 됨
+        config = OmegaConf.merge(*configs, cli)
+        # 보통 lightning_config = {}  # 설정정보 중 일부 키를 삭제할 때는 conf.pop("키명") 또는 del conf["키명"] 으로 삭제
+        lightning_config = config.pop("lightning", OmegaConf.create())
         # merge trainer cli with config
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
         # default to ddp
         trainer_config["distributed_backend"] = "ddp"
-        for k in nondefault_trainer_args(opt):  # eg. nondefault_trainer_args(opt): ['gpus']
+        # eg. nondefault_trainer_args(opt): ['gpus']
+        for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
-        if not "gpus" in trainer_config:
+        if "gpus" not in trainer_config:
             del trainer_config["distributed_backend"]
             cpu = True
         else:
@@ -431,10 +460,12 @@ if __name__ == "__main__":
             print(f"Running on GPUs {gpuinfo}")
             cpu = False
         trainer_opt = argparse.Namespace(**trainer_config)
-        lightning_config.trainer = trainer_config  # eg. {'distributed_backend': 'ddp', 'gpus': '0,1,2'}
+        # eg. {'distributed_backend': 'ddp', 'gpus': '0,1,2'}
+        lightning_config.trainer = trainer_config
 
         # model
-        model = instantiate_from_config(config.model)  # eg. config.model: {'base_learning_rate': 4.5e-06, 'target': 'taming.models.vqgan.VQModel', 'params': {'embed_dim': 256, 'n_embed': 1024, 'ddconfig': {'double_z': False, 'z_channels': 256, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1, 1, 2, 2, 4], 'num_res_blocks': 2, 'attn_resolutions': [16], 'dropout': 0.0}, 'lossconfig': {'target': 'taming.modules.losses.vqperceptual.VQLPIPSWithDiscriminator', 'params': {'disc_conditional': False, 'disc_in_channels': 3, 'disc_start': 30001, 'disc_weight': 0.8, 'codebook_weight': 1.0}}}}
+        # eg. config.model: {'base_learning_rate': 4.5e-06, 'target': 'taming.models.vqgan.VQModel', 'params': {'embed_dim': 256, 'n_embed': 1024, 'ddconfig': {'double_z': False, 'z_channels': 256, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1, 1, 2, 2, 4], 'num_res_blocks': 2, 'attn_resolutions': [16], 'dropout': 0.0}, 'lossconfig': {'target': 'taming.modules.losses.vqperceptual.VQLPIPSWithDiscriminator', 'params': {'disc_conditional': False, 'disc_in_channels': 3, 'disc_start': 30001, 'disc_weight': 0.8, 'codebook_weight': 1.0}}}}
+        model = instantiate_from_config(config.model)
 
         # trainer and callbacks
         trainer_kwargs = dict()
@@ -481,14 +512,15 @@ if __name__ == "__main__":
                 "save_last": True,
             }
         }
-        if hasattr(model, "monitor"):  # 보통 model instance만들 때 monitor인자 주지 않았었음. 따라서 val_loss를 기준으로 Top1만 이름 바꿔가면서 저장
+        # 보통 model instance만들 때 monitor인자 주지 않았었음. 따라서 val_loss를 기준으로 Top1만 이름 바꿔가면서 저장
+        if hasattr(model, "monitor"):
             print(f"Monitoring {model.monitor} as checkpoint metric.")
             default_modelckpt_cfg["params"]["monitor"] = model.monitor
             default_modelckpt_cfg["params"]["save_top_k"] = 3
 
         modelckpt_cfg = lightning_config.modelcheckpoint or OmegaConf.create()
         modelckpt_cfg = OmegaConf.merge(default_modelckpt_cfg, modelckpt_cfg)
-        #trainer_kwargs["checkpoint_callback"] = instantiate_from_config(modelckpt_cfg)    # NOTE: checkpoint_callback을 trainer_kwargs["callbacks"]의 원소로 넣어야 할 것 같아서 주석처리함.
+        # trainer_kwargs["checkpoint_callback"] = instantiate_from_config(modelckpt_cfg)    # NOTE: checkpoint_callback을 trainer_kwargs["callbacks"]의 원소로 넣어야 할 것 같아서 주석처리함.
 
         # add callback which sets up log directory
         default_callbacks_cfg = {
@@ -501,7 +533,8 @@ if __name__ == "__main__":
                     "ckptdir": ckptdir,
                     "cfgdir": cfgdir,
                     "config": config,
-                    "lightning_config": lightning_config,    # {'trainer': {'distributed_backend': 'ddp', 'gpus': '0,1,2'}}
+                    # {'trainer': {'distributed_backend': 'ddp', 'gpus': '0,1,2'}}
+                    "lightning_config": lightning_config,
                 }
             },
             "image_logger": {
@@ -513,34 +546,42 @@ if __name__ == "__main__":
                 }
             },
             "learning_rate_logger": {
-                "target": "main.LearningRateMonitor",  # Automatically monitor and logs learning rate for learning rate schedulers during training. lr_scheduler없으면 작동 안 함
+                # Automatically monitor and logs learning rate for learning rate schedulers during training. lr_scheduler없으면 작동 안 함
+                "target": "main.LearningRateMonitor",
                 "params": {
                     "logging_interval": "step",
-                    #"log_momentum": True
+                    # "log_momentum": True
                 }
             },
         }
         callbacks_cfg = lightning_config.callbacks or OmegaConf.create()
         callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
-        trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg] + [instantiate_from_config(modelckpt_cfg)]  # NOTE: ModelCheckpoint를 여기다 넣어야 할 것 같아서 해 봄.
+        trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg] + [
+            # NOTE: ModelCheckpoint를 여기다 넣어야 할 것 같아서 해 봄.
+            instantiate_from_config(modelckpt_cfg)]
 
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
 
         # data
-        data = instantiate_from_config(config.data) # {'target': 'main.DataModuleFromConfig', 'params': {'batch_size': 3, 'num_workers': 8, 'train': {'target': 'taming.data.faceshq.FacesHQTrain', 'params': {'size': 256, 'crop_size': 256}}, 'validation': {'target': 'taming.data.faceshq.FacesHQValidation', 'params': {'size': 256, 'crop_size': 256}}}}
+        # {'target': 'main.DataModuleFromConfig', 'params': {'batch_size': 3, 'num_workers': 8, 'train': {'target': 'taming.data.faceshq.FacesHQTrain', 'params': {'size': 256, 'crop_size': 256}}, 'validation': {'target': 'taming.data.faceshq.FacesHQValidation', 'params': {'size': 256, 'crop_size': 256}}}}
+        data = instantiate_from_config(config.data)
         # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
         # calling these ourselves should not be necessary but it is.
         # lightning still takes care of proper multiprocessing though
-        data.prepare_data()  # 의미없음. taming.data.faceshq.FacesHQTrain이 잘 import되는지 checking하는 정도.
-        data.setup()         # 사실 이것도 이렇게 밖에서 직접 실행시키는 게 의미없음. 어차피 fit안에 datamodule 넣어주고 내부적으로 돌아가게 될 것임.
+        # 의미없음. taming.data.faceshq.FacesHQTrain이 잘 import되는지 checking하는 정도.
+        data.prepare_data()
+        # 사실 이것도 이렇게 밖에서 직접 실행시키는 게 의미없음. 어차피 fit안에 datamodule 넣어주고 내부적으로 돌아가게 될 것임.
+        data.setup()
 
         # configure learning rate
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
         if not cpu:
-            ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))  # eg. ngpu = 3
+            ngpu = len(lightning_config.trainer.gpus.strip(
+                ",").split(','))  # eg. ngpu = 3
         else:
             ngpu = 1
-        accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches or 1  # 보통 lightning_config.trainer.accumulate_grad_batches=None이라 accumulate_grad_batches=1
+        # 보통 lightning_config.trainer.accumulate_grad_batches=None이라 accumulate_grad_batches=1
+        accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches or 1
         print(f"accumulate_grad_batches = {accumulate_grad_batches}")
         lightning_config.trainer.accumulate_grad_batches = accumulate_grad_batches
         model.learning_rate = accumulate_grad_batches * ngpu * bs * base_lr
@@ -557,7 +598,8 @@ if __name__ == "__main__":
 
         def divein(*args, **kwargs):
             if trainer.global_rank == 0:
-                import pudb; pudb.set_trace()
+                import pudb
+                pudb.set_trace()
 
         import signal
         signal.signal(signal.SIGUSR1, melk)
@@ -571,9 +613,10 @@ if __name__ == "__main__":
                 melk()
                 raise
         if not opt.no_test and not trainer.interrupted:   # 보통 opt.no_test = False,  trainer.interrupted = False
-            trainer.test(model, data)                     # 아마 1000에폭(default max epoch) 다 돌고 여기 들어올텐데 testset은 만들지 않았어서 여기서 에러 발생할 듯. 그럼 아래 Exception으로 간다
+            # 아마 1000에폭(default max epoch) 다 돌고 여기 들어올텐데 testset은 만들지 않았어서 여기서 에러 발생할 듯. 그럼 아래 Exception으로 간다
+            trainer.test(model, data)
     except Exception:
-        if opt.debug and trainer.global_rank==0:          # 보통 opt.debug = False
+        if opt.debug and trainer.global_rank == 0:          # 보통 opt.debug = False
             try:
                 import pudb as debugger
             except ImportError:
@@ -582,7 +625,7 @@ if __name__ == "__main__":
         raise
     finally:
         # move newly created debug project to debug_runs
-        if opt.debug and not opt.resume and trainer.global_rank==0:
+        if opt.debug and not opt.resume and trainer.global_rank == 0:
             dst, name = os.path.split(logdir)
             dst = os.path.join(dst, "debug_runs", name)
             os.makedirs(os.path.split(dst)[0], exist_ok=True)

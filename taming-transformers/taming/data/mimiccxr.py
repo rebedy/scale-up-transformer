@@ -14,12 +14,14 @@ class MimicCXRTrain(Dataset):
         with open("data/mimiccxrtrain.txt", "r") as f:
             relpaths = f.read().splitlines()  # ['00982.png', '00988.png',...]
         paths = [os.path.join(root, relpath) for relpath in relpaths]
-        self.data = ImagePaths(paths=paths, size=size, random_crop=False)  # self.data: <class 'taming.data.base.ImagePaths'>    # size = 256
+        # self.data: <class 'taming.data.base.ImagePaths'>    # size = 256
+        self.data = ImagePaths(paths=paths, size=size, random_crop=False)
         self.keys = keys  # 보통 None
 
         self.coord = coord   # False
         if crop_size is not None:  # crop_size = 256
-            self.cropper = albumentations.RandomCrop(height=crop_size,width=crop_size)
+            self.cropper = albumentations.RandomCrop(
+                height=crop_size, width=crop_size)
             if self.coord:
                 self.cropper = albumentations.Compose([self.cropper],
                                                       additional_targets={"coord": "image"})
@@ -28,14 +30,15 @@ class MimicCXRTrain(Dataset):
         return len(self.data)
 
     def __getitem__(self, i):
-        ex = self.data[i]  # self.data: <taming.data.base.ConcatDatasetWithIndex object>  ex = {image': array(256, 256, 3), 'file_path_': 'data/ffhq/00137.png'}
+        # self.data: <taming.data.base.ConcatDatasetWithIndex object>  ex = {image': array(256, 256, 3), 'file_path_': 'data/ffhq/00137.png'}
+        ex = self.data[i]
         if hasattr(self, "cropper"):
             if not self.coord:  # self.coord는 False
                 out = self.cropper(image=ex["image"])
                 ex["image"] = out["image"]
             else:
-                h,w,_ = ex["image"].shape
-                coord = np.arange(h*w).reshape(h,w,1)/(h*w)
+                h, w, _ = ex["image"].shape
+                coord = np.arange(h * w).reshape(h, w, 1) / (h * w)
                 out = self.cropper(image=ex["image"], coord=coord)
                 ex["image"] = out["image"]
                 ex["coord"] = out["coord"]
@@ -50,28 +53,32 @@ class MimicCXRValidation(Dataset):
         with open("data/mimiccxrvalidation.txt", "r") as f:
             relpaths = f.read().splitlines()  # ['00982.png', '00988.png',...]
         paths = [os.path.join(root, relpath) for relpath in relpaths]
-        self.data = ImagePaths(paths=paths, size=size, random_crop=False)  # self.data: <class 'taming.data.base.ImagePaths'>    # size = 256
+        # self.data: <class 'taming.data.base.ImagePaths'>    # size = 256
+        self.data = ImagePaths(paths=paths, size=size, random_crop=False)
         self.keys = keys  # 보통 None
 
         self.coord = coord  # False
         if crop_size is not None:  # crop_size = 256
-            self.cropper = albumentations.CenterCrop(height=crop_size,width=crop_size)
+            self.cropper = albumentations.CenterCrop(
+                height=crop_size, width=crop_size)
             if self.coord:
                 self.cropper = albumentations.Compose([self.cropper],
                                                       additional_targets={"coord": "image"})
 
     def __len__(self):
-        return len(self.data) 
+        return len(self.data)
 
     def __getitem__(self, i):
-        ex = self.data[i]  # self.data: <taming.data.base.ConcatDatasetWithIndex object>   ex = {image': array(256, 256, 3), 'file_path_': 'data/ffhq/00137.png'}
-        if hasattr(self, "cropper"): # True
+        # self.data: <taming.data.base.ConcatDatasetWithIndex object>   ex = {image': array(256, 256, 3), 'file_path_': 'data/ffhq/00137.png'}
+        ex = self.data[i]
+        if hasattr(self, "cropper"):  # True
             if not self.coord:  # self.coord = False
-                out = self.cropper(image=ex["image"])  # 이미 ex["image"]가 256x256으로 centercrop된 후에 나온건데 또 centercrop을 하네.
+                # 이미 ex["image"]가 256x256으로 centercrop된 후에 나온건데 또 centercrop을 하네.
+                out = self.cropper(image=ex["image"])
                 ex["image"] = out["image"]
             else:
-                h,w,_ = ex["image"].shape
-                coord = np.arange(h*w).reshape(h,w,1)/(h*w)
+                h, w, _ = ex["image"].shape
+                coord = np.arange(h * w).reshape(h, w, 1) / (h * w)
                 out = self.cropper(image=ex["image"], coord=coord)
                 ex["image"] = out["image"]
                 ex["coord"] = out["coord"]
