@@ -75,9 +75,9 @@ if __name__ == '__main__':
         '--text_root_dir', default='/home/edlab/dylee/mimic/physionet.org/files/mimic-cxr-jpg/2.0.0/preprocessed_reports', type=str)
 
     # if vqgan==256:
-    #     parser.add_argument('--vqgan_model_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt', type=str)
-    #     parser.add_argument('--vqgan_config_path', default='/home/edlab/wcshin/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml', type=str)
-    #     parser.add_argument('--codebook_indices_path', default='/home/edlab/wcshin/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle', type=str)
+    #     parser.add_argument('--vqgan_model_path', default='/home/edlab/dylee/vqgan_cxr/mimiccxr_vqgan1024/checkpoints/last.ckpt', type=str)
+    #     parser.add_argument('--vqgan_config_path', default='/home/edlab/dylee/vqgan_cxr/mimiccxr_vqgan1024/configs/2021-07-05T10-23-24-project.yaml', type=str)
+    #     parser.add_argument('--codebook_indices_path', default='/home/edlab/dylee/codebook_indices/mimiccxr_vqgan1024_codebook_indices.pickle', type=str)
 
     # elif vqgan==512:
     #     parser.add_argument('--vqgan_model_path', default='/home/data_storage/dylee_135/mimic-vqgan/mimiccxr_vqgan1024_reso512/checkpoints/last.ckpt', type=str)
